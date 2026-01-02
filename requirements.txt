@@ -1,0 +1,27 @@
+# Core Dependencies
+numpy>=1.24.0
+pandas>=2.0.0
+gymnasium>=0.29.0
+stable-baselines3>=2.1.0
+torch>=2.0.0
+
+# Technical Analysis
+ta-lib>=0.4.28
+# Note: If ta-lib installation fails, use: pip install TA-Lib-binary
+# Or install from: https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib
+
+# MetaTrader5 (for Windows VPS)
+MetaTrader5>=5.0.45
+
+# ONNX Export
+onnx>=1.14.0
+onnxruntime>=1.15.0
+
+# Utilities
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+
+# Development
+pytest>=7.4.0
+black>=23.7.0
+
