@@ -23,6 +23,13 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 import gymnasium as gym
 from trading_env import ForexTradingEnv
 
+# Check if tensorboard is available (optional)
+try:
+    import tensorboard
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    TENSORBOARD_AVAILABLE = False
+
 
 class LSTMFeaturesExtractor(BaseFeaturesExtractor):
     """
@@ -365,6 +372,12 @@ class TradingAgent:
                 }
             else:
                 raise ValueError(f"Unknown architecture: {architecture}. Use 'lstm' or 'transformer'")
+            
+            # Handle tensorboard_log - set to None if tensorboard not available
+            if tensorboard_log and not TENSORBOARD_AVAILABLE:
+                print("Warning: TensorBoard not installed. Logging disabled.")
+                print("To enable: pip install tensorboard")
+                tensorboard_log = None
             
             self.model = PPO(
                 policy_name,

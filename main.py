@@ -21,6 +21,13 @@ from data_provider import (
 from trading_env import ForexTradingEnv
 from agent import TradingAgent, split_data_for_training
 
+# Check if TensorBoard is available (optional)
+try:
+    import tensorboard
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    TENSORBOARD_AVAILABLE = False
+
 # Import ONNX functions (optional - only needed for export)
 try:
     from export_onnx import export_ppo_to_onnx, verify_onnx_model
@@ -152,6 +159,15 @@ def train_model(
     
     # Create agent
     print(f"\nInitializing PPO agent with {architecture.upper()} architecture...")
+    
+    # Set tensorboard_log only if available
+    tensorboard_log_path = None
+    if TENSORBOARD_AVAILABLE:
+        tensorboard_log_path = os.path.join(log_dir, "tensorboard")
+    else:
+        print("Note: TensorBoard not available. Training logs will not be saved.")
+        print("To enable: pip install tensorboard")
+    
     agent = TradingAgent(
         env=train_env,
         architecture=architecture,
@@ -160,7 +176,7 @@ def train_model(
         batch_size=64,
         n_epochs=10,
         gamma=0.99,
-        tensorboard_log=os.path.join(log_dir, "tensorboard"),
+        tensorboard_log=tensorboard_log_path,
         verbose=1
     )
     

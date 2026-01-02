@@ -19,6 +19,10 @@ onnxruntime>=1.15.0
 python-dotenv>=1.0.0
 tqdm>=4.65.0
 
+# Optional: TensorBoard for training visualization
+# tensorboard>=2.13.0
+# Uncomment above line if you want TensorBoard logging
+
 # Development
 pytest>=7.4.0
 black>=23.7.0
