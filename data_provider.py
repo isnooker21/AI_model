@@ -107,10 +107,12 @@ def fetch_historical_data(
     timeframe: int = 5,  # M5
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
-    lookback_days: int = 730  # 2 years
+    lookback_days: int = 730,  # 2 years (target, will fetch as much as available)
+    batch_days: int = 90  # Fetch in batches of 90 days
 ) -> pd.DataFrame:
     """
-    Fetch historical data from MetaTrader5.
+    Fetch historical data from MetaTrader5 incrementally.
+    Fetches data in batches going backwards from latest date.
     Returns only raw candlestick data with calculated features.
     
     Args:
@@ -118,7 +120,8 @@ def fetch_historical_data(
         timeframe: Timeframe in minutes (default: 5 for M5)
         date_from: Start date (optional)
         date_to: End date (optional)
-        lookback_days: Number of days to look back if date_from not provided (default: 730 = 2 years)
+        lookback_days: Target number of days to look back (default: 730 = 2 years)
+        batch_days: Number of days per batch (default: 90 days)
         
     Returns:
         DataFrame with OHLCV data and candlestick features
@@ -150,36 +153,88 @@ def fetch_historical_data(
         else:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         
-        # Try to fetch data from MT5
-        # Try primary symbol first
-        rates = mt5.copy_rates_range(symbol, mt5_timeframe, date_from, date_to)
+        # Find working symbol first (try primary and alternatives)
+        working_symbol = None
+        test_end = date_to
+        test_start = test_end - timedelta(days=7)  # Test with 7 days
         
-        # If failed, try alternative symbols (common variations)
-        if rates is None or len(rates) == 0:
+        # Try primary symbol first
+        test_rates = mt5.copy_rates_range(symbol, mt5_timeframe, test_start, test_end)
+        if test_rates is not None and len(test_rates) > 0:
+            working_symbol = symbol
+            print(f"Symbol {symbol} is available")
+        else:
+            # Try alternative symbols
             alternative_symbols = ['XAUUSD', 'GOLD', 'XAUUSD.c', 'XAUUSD#']
             for alt_symbol in alternative_symbols:
                 if alt_symbol != symbol:
                     print(f"Trying alternative symbol: {alt_symbol}")
-                    rates = mt5.copy_rates_range(alt_symbol, mt5_timeframe, date_from, date_to)
-                    if rates is not None and len(rates) > 0:
-                        print(f"Successfully fetched data using symbol: {alt_symbol}")
-                        symbol = alt_symbol  # Update symbol for consistency
+                    test_rates = mt5.copy_rates_range(alt_symbol, mt5_timeframe, test_start, test_end)
+                    if test_rates is not None and len(test_rates) > 0:
+                        working_symbol = alt_symbol
+                        print(f"Successfully found working symbol: {alt_symbol}")
                         break
         
-        # If still no data, raise error with helpful message
-        if rates is None or len(rates) == 0:
-            error_msg = f"No data retrieved for {symbol}\n\n"
+        if working_symbol is None:
+            error_msg = f"No data available for {symbol} or alternatives\n\n"
             error_msg += "Possible solutions:\n"
             error_msg += "1. Check if the symbol name is correct in your MT5 terminal\n"
             error_msg += "2. Common symbol names: XAUUSD, XAUUSDc, GOLD, XAUUSD.c\n"
             error_msg += "3. Make sure the symbol is available in Market Watch\n"
-            error_msg += "4. Try using --symbol argument with the correct symbol name\n"
-            error_msg += "5. Ensure you have historical data for the requested date range"
+            error_msg += "4. Try using --symbol argument with the correct symbol name"
             raise ValueError(error_msg)
         
-        # Convert to DataFrame
-        df = pd.DataFrame(rates)
-        df['time'] = pd.to_datetime(df['time'], unit='s')
+        # Fetch data incrementally in batches (going backwards from latest)
+        print(f"\nFetching data incrementally for {working_symbol}...")
+        print(f"Target: {lookback_days} days, Fetching in batches of {batch_days} days")
+        
+        all_rates = []
+        current_end = date_to
+        total_fetched_days = 0
+        batch_num = 1
+        
+        while current_end > date_from:
+            # Calculate batch start date
+            batch_start = current_end - timedelta(days=batch_days)
+            if batch_start < date_from:
+                batch_start = date_from
+            
+            # Fetch batch
+            print(f"Batch {batch_num}: Fetching from {batch_start.strftime('%Y-%m-%d')} to {current_end.strftime('%Y-%m-%d')}...", end=' ')
+            batch_rates = mt5.copy_rates_range(working_symbol, mt5_timeframe, batch_start, current_end)
+            
+            if batch_rates is not None and len(batch_rates) > 0:
+                all_rates.append(batch_rates)
+                batch_days_fetched = (current_end - batch_start).days
+                total_fetched_days += batch_days_fetched
+                print(f"✓ Got {len(batch_rates)} bars ({batch_days_fetched} days)")
+                
+                # Move to next batch (go backwards)
+                current_end = batch_start
+                batch_num += 1
+            else:
+                # No more data available, stop
+                print(f"✗ No more data available")
+                break
+        
+        # Combine all batches
+        if len(all_rates) == 0:
+            raise ValueError(f"No data retrieved for {working_symbol}")
+        
+        print(f"\nCombining {len(all_rates)} batches...")
+        rates = np.concatenate(all_rates)
+        
+        # Remove duplicates (in case of overlap) and sort by time
+        df_temp = pd.DataFrame(rates)
+        df_temp['time'] = pd.to_datetime(df_temp['time'], unit='s')
+        df_temp = df_temp.drop_duplicates(subset=['time'])
+        df_temp = df_temp.sort_values('time')
+        
+        print(f"Total: {len(df_temp)} bars covering {total_fetched_days} days")
+        print(f"Date range: {df_temp['time'].min()} to {df_temp['time'].max()}")
+        
+        # Convert to DataFrame (already processed above)
+        df = df_temp.copy()
         df.set_index('time', inplace=True)
         
         # Rename columns for consistency
