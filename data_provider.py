@@ -75,13 +75,16 @@ class MockMT5:
         
         for i in range(num_bars):
             # Random walk with slight upward bias
-            change = np.random.normal(0, 0.5)  # ~$0.50 volatility per 15min
+            # Adjust volatility based on timeframe (M5 has less volatility per bar)
+            volatility = 0.2 if bar_interval == 5 else 0.5
+            change = np.random.normal(0, volatility)
             current_price += change
             
             # Generate OHLC
-            high = current_price + abs(np.random.normal(0, 0.3))
-            low = current_price - abs(np.random.normal(0, 0.3))
-            open_price = current_price + np.random.normal(0, 0.2)
+            wick_size = abs(np.random.normal(0, 0.15))
+            high = current_price + wick_size
+            low = current_price - wick_size
+            open_price = current_price + np.random.normal(0, 0.1)
             close_price = current_price
             
             # Ensure OHLC consistency
@@ -89,7 +92,7 @@ class MockMT5:
             low = min(low, open_price, close_price)
             
             prices.append([
-                int(date_from.timestamp()) + i * 15 * 60,  # time
+                int(date_from.timestamp()) + i * bar_interval * 60,  # time
                 open_price,   # open
                 high,        # high
                 low,         # low
@@ -194,22 +197,22 @@ def get_time_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fetch_historical_data(
-    symbol: str = "XAUUSD",
-    timeframe: int = 15,  # M15
+    symbol: str = "XAUUSDc",
+    timeframe: int = 5,  # M5
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
-    lookback_days: int = 365
+    lookback_days: int = 730  # 2 years
 ) -> pd.DataFrame:
     """
     Fetch historical data from MetaTrader5 or generate mock data.
     Returns only raw candlestick data with calculated features.
     
     Args:
-        symbol: Trading symbol (default: XAUUSD)
-        timeframe: Timeframe in minutes (default: 15 for M15)
+        symbol: Trading symbol (default: XAUUSDc for Cent account)
+        timeframe: Timeframe in minutes (default: 5 for M5)
         date_from: Start date (optional)
         date_to: End date (optional)
-        lookback_days: Number of days to look back if date_from not provided
+        lookback_days: Number of days to look back if date_from not provided (default: 730 = 2 years)
         
     Returns:
         DataFrame with OHLCV data and candlestick features
@@ -229,7 +232,9 @@ def fetch_historical_data(
             date_from = date_to - timedelta(days=lookback_days)
         
         # Convert timeframe to MT5 constant
-        if timeframe == 15:
+        if timeframe == 5:
+            mt5_timeframe = mt5.TIMEFRAME_M5 if MT5_AVAILABLE else 5
+        elif timeframe == 15:
             mt5_timeframe = mt5.TIMEFRAME_M15 if MT5_AVAILABLE else 15
         elif timeframe == 60:
             mt5_timeframe = mt5.TIMEFRAME_H1 if MT5_AVAILABLE else 60
@@ -273,7 +278,7 @@ def fetch_historical_data(
         mt5.shutdown()
 
 
-def save_data_to_csv(df: pd.DataFrame, filepath: str = "data/xauusd_m15.csv") -> None:
+def save_data_to_csv(df: pd.DataFrame, filepath: str = "data/xauusdc_m5.csv") -> None:
     """
     Save DataFrame to CSV file.
     
@@ -288,7 +293,7 @@ def save_data_to_csv(df: pd.DataFrame, filepath: str = "data/xauusd_m15.csv") ->
     print(f"Data saved to {filepath}")
 
 
-def load_data_from_csv(filepath: str = "data/xauusd_m15.csv") -> pd.DataFrame:
+def load_data_from_csv(filepath: str = "data/xauusdc_m5.csv") -> pd.DataFrame:
     """
     Load DataFrame from CSV file.
     
@@ -307,14 +312,14 @@ if __name__ == "__main__":
     # Test data fetching
     print("Testing candlestick-only data provider...")
     try:
-        df = fetch_historical_data(symbol="XAUUSD", lookback_days=30)
+        df = fetch_historical_data(symbol="XAUUSDc", timeframe=5, lookback_days=730)
         print(f"\nData shape: {df.shape}")
         print(f"\nColumns: {df.columns.tolist()}")
         print(f"\nFirst few rows:\n{df.head()}")
         print(f"\nLast few rows:\n{df.tail()}")
         
         # Save to CSV
-        save_data_to_csv(df, "data/xauusd_m15.csv")
+        save_data_to_csv(df, "data/xauusdc_m5.csv")
         
     except Exception as e:
         print(f"Error: {e}")

@@ -42,15 +42,16 @@ class ForexTradingEnv(gym.Env):
         data: pd.DataFrame,
         sequence_length: int = 50,
         initial_balance: float = 10000.0,
-        lot_size: float = 0.01,
+        lot_size: float = 0.1,  # Increased for more visible impact
         max_positions: int = 5,
         max_drawdown_pct: float = 0.20,  # 20% max drawdown
-        recovery_threshold_pct: float = 0.05,  # 5% drawdown triggers recovery
+        recovery_threshold_pct: float = 0.005,  # 0.5% drawdown triggers recovery (aggressive)
         commission_per_lot: float = 7.0,  # $7 per lot
         spread_pips: float = 2.0,  # 2 pips spread
-        time_penalty: float = -0.001,  # Small penalty per step
+        time_penalty: float = -0.0005,  # Reduced time penalty
         reward_scale: float = 1.0,
-        normalize_features: bool = True
+        normalize_features: bool = True,
+        min_grid_distance: float = 2.0  # Minimum price distance (USD) for recovery trade
     ):
         """
         Initialize the trading environment.
@@ -83,10 +84,14 @@ class ForexTradingEnv(gym.Env):
         self.time_penalty = time_penalty
         self.reward_scale = reward_scale
         self.normalize_features = normalize_features
+        self.min_grid_distance = min_grid_distance  # Minimum price distance for recovery
         
         # Trading parameters
         self.pip_value = 0.01  # For XAUUSD, 1 pip = $0.01 per lot
         self.point_value = 0.01
+        
+        # No-trade penalty (encourages active trading)
+        self.no_trade_penalty = -0.01
         
         # Required candlestick feature columns
         self.candle_features = [
@@ -361,7 +366,7 @@ class ForexTradingEnv(gym.Env):
     
     def _can_recovery_trade(self, action_type: str) -> bool:
         """
-        Check if recovery trade is allowed based on drawdown and position state.
+        Check if recovery trade is allowed based on drawdown, position state, and minimum grid distance.
         
         Args:
             action_type: 'buy' or 'sell'
@@ -377,18 +382,34 @@ class ForexTradingEnv(gym.Env):
         if len(matching_positions) == 0:
             return False
         
-        # Check drawdown threshold
-        current_equity = self.balance + self._calculate_floating_pnl()
-        drawdown_pct = (self.peak_equity - current_equity) / self.peak_equity if self.peak_equity > 0 else 0.0
-        
-        if drawdown_pct < self.recovery_threshold_pct:
-            return False  # Not enough drawdown to trigger recovery
-        
         # Check max positions
         if len(self.positions) >= self.max_positions:
             return False
         
-        # Check max drawdown
+        # Get current price and average entry price
+        current_price = self.data.iloc[self.current_step]['close']
+        avg_entry = self._calculate_avg_entry_price(action_type)
+        
+        # Calculate price distance from average entry
+        price_distance = abs(current_price - avg_entry)
+        
+        # Check minimum grid distance (2.0 USD = 200 points)
+        # If price has moved enough, allow recovery even with small drawdown
+        grid_distance_met = price_distance >= self.min_grid_distance
+        
+        # Check drawdown threshold
+        current_equity = self.balance + self._calculate_floating_pnl()
+        drawdown_pct = (self.peak_equity - current_equity) / self.peak_equity if self.peak_equity > 0 else 0.0
+        
+        # Allow recovery if:
+        # 1. Drawdown threshold met (0.5%), OR
+        # 2. Minimum grid distance met (2.0 USD away from avg entry)
+        drawdown_threshold_met = drawdown_pct >= self.recovery_threshold_pct
+        
+        if not (drawdown_threshold_met or grid_distance_met):
+            return False  # Neither condition met
+        
+        # Check max drawdown (safety check)
         if drawdown_pct >= self.max_drawdown_pct:
             return False  # Too much drawdown, don't add more risk
         
@@ -597,7 +618,7 @@ class ForexTradingEnv(gym.Env):
     def _calculate_reward(self, trade_result: Dict) -> float:
         """
         Calculate reward based on trading action and portfolio state.
-        Rewards correct price direction prediction and penalizes drawdowns.
+        Aggressive reward function for high-frequency trading.
         
         Args:
             trade_result: Result from trade execution
@@ -607,12 +628,17 @@ class ForexTradingEnv(gym.Env):
         """
         reward = 0.0
         
-        # Time penalty for every step
+        # No-trade penalty: Penalize when AI has zero positions (encourages active trading)
+        if len(self.positions) == 0 and trade_result['action'] == 0:
+            reward += self.no_trade_penalty
+        
+        # Reduced time penalty for every step (less penalty for holding trades)
         reward += self.time_penalty
         
-        # Reward for realized profit
+        # Increased reward for realized profit (encourages profit realization and capital cycling)
         if trade_result.get('pnl', 0) > 0:
-            reward += trade_result['pnl'] / self.initial_balance * 10.0
+            # Increased multiplier from 10.0 to 20.0 for more aggressive profit reward
+            reward += trade_result['pnl'] / self.initial_balance * 20.0
         
         # Penalty for realized loss
         elif trade_result.get('pnl', 0) < 0:

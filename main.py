@@ -46,10 +46,10 @@ except ImportError as e:
 
 
 def fetch_and_prepare_data(
-    symbol: str = "XAUUSD",
-    timeframe: int = 15,
-    lookback_days: int = 365,
-    data_file: str = "data/xauusd_m15.csv",
+    symbol: str = "XAUUSDc",
+    timeframe: int = 5,  # M5
+    lookback_days: int = 730,  # 2 years
+    data_file: str = "data/xauusdc_m5.csv",
     force_refresh: bool = False
 ) -> pd.DataFrame:
     """
@@ -97,7 +97,7 @@ def train_model(
     data: pd.DataFrame,
     train_timesteps: int = 100000,
     initial_balance: float = 10000.0,
-    lot_size: float = 0.01,
+    lot_size: float = 0.1,  # Increased for more visible impact
     max_positions: int = 5,
     sequence_length: int = 50,
     architecture: str = "lstm",  # "lstm" or "transformer"
@@ -143,7 +143,8 @@ def train_model(
         lot_size=lot_size,
         max_positions=max_positions,
         max_drawdown_pct=0.20,
-        recovery_threshold_pct=0.05
+        recovery_threshold_pct=0.005,  # 0.5% aggressive recovery
+        min_grid_distance=2.0  # 2.0 USD minimum grid distance
     )
     
     print("Creating validation environment...")
@@ -154,7 +155,8 @@ def train_model(
         lot_size=lot_size,
         max_positions=max_positions,
         max_drawdown_pct=0.20,
-        recovery_threshold_pct=0.05
+        recovery_threshold_pct=0.005,  # 0.5% aggressive recovery
+        min_grid_distance=2.0  # 2.0 USD minimum grid distance
     )
     
     # Create agent
@@ -204,7 +206,7 @@ def evaluate_model(
     test_data: pd.DataFrame,
     sequence_length: int = 50,
     initial_balance: float = 10000.0,
-    lot_size: float = 0.01,
+    lot_size: float = 0.1,  # Increased for more visible impact
     max_positions: int = 5,
     n_episodes: int = 10
 ) -> dict:
@@ -235,7 +237,8 @@ def evaluate_model(
         lot_size=lot_size,
         max_positions=max_positions,
         max_drawdown_pct=0.20,
-        recovery_threshold_pct=0.05
+        recovery_threshold_pct=0.005,  # 0.5% aggressive recovery
+        min_grid_distance=2.0  # 2.0 USD minimum grid distance
     )
     
     # Evaluate
@@ -329,19 +332,25 @@ def main():
     parser.add_argument(
         "--symbol",
         type=str,
-        default="XAUUSD",
-        help="Trading symbol"
+        default="XAUUSDc",
+        help="Trading symbol (default: XAUUSDc for Cent account)"
+    )
+    parser.add_argument(
+        "--timeframe",
+        type=int,
+        default=5,
+        help="Timeframe in minutes (default: 5 for M5)"
     )
     parser.add_argument(
         "--lookback_days",
         type=int,
-        default=365,
-        help="Number of days of historical data"
+        default=730,
+        help="Number of days of historical data (default: 730 = 2 years)"
     )
     parser.add_argument(
         "--data_file",
         type=str,
-        default="data/xauusd_m15.csv",
+        default="data/xauusdc_m5.csv",
         help="Path to data file"
     )
     parser.add_argument(
@@ -366,8 +375,8 @@ def main():
     parser.add_argument(
         "--lot_size",
         type=float,
-        default=0.01,
-        help="Position size in lots"
+        default=0.1,
+        help="Position size in lots (default: 0.1 for more visible impact)"
     )
     parser.add_argument(
         "--max_positions",
