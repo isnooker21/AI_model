@@ -18,7 +18,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback,
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
+from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 import gymnasium as gym
 from trading_env import ForexTradingEnv
@@ -239,20 +239,8 @@ class TransformerFeaturesExtractor(BaseFeaturesExtractor):
         return output
 
 
-# Register custom policies
-register_policy(
-    "LSTMPolicy",
-    ActorCriticPolicy,
-    "lstm",
-    LSTMFeaturesExtractor
-)
-
-register_policy(
-    "TransformerPolicy",
-    ActorCriticPolicy,
-    "transformer",
-    TransformerFeaturesExtractor
-)
+# Custom policies are now defined via policy_kwargs in PPO initialization
+# No need to register them separately
 
 
 class SaveOnBestRewardCallback(BaseCallback):
@@ -349,8 +337,10 @@ class TradingAgent:
             print(f"Creating new PPO model with {architecture.upper()} architecture")
             
             # Select policy based on architecture
+            # Use ActorCriticPolicy directly with custom features extractor
+            policy_name = ActorCriticPolicy
+            
             if architecture.lower() == "lstm":
-                policy_name = "LSTMPolicy"
                 policy_kwargs = {
                     "features_extractor_class": LSTMFeaturesExtractor,
                     "features_extractor_kwargs": {
@@ -362,7 +352,6 @@ class TradingAgent:
                     }
                 }
             elif architecture.lower() == "transformer":
-                policy_name = "TransformerPolicy"
                 policy_kwargs = {
                     "features_extractor_class": TransformerFeaturesExtractor,
                     "features_extractor_kwargs": {
