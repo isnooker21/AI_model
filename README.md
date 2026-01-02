@@ -48,13 +48,35 @@ venv\Scripts\activate  # On Windows
 ```
 
 3. Install dependencies:
+
+**On Windows VPS:**
 ```bash
+# Option 1: Use installation script
+install.bat
+
+# Option 2: Manual installation
+pip install -r requirements.txt
+```
+
+**On Mac/Linux:**
+```bash
+# Option 1: Use installation script
+chmod +x install.sh
+./install.sh
+
+# Option 2: Manual installation
 pip install -r requirements.txt
 ```
 
 **Note**: If `ta-lib` installation fails, you can:
 - Install TA-Lib binary: `pip install TA-Lib-binary`
 - Or download from: https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib
+
+**Troubleshooting ModuleNotFoundError:**
+If you encounter `ModuleNotFoundError: No module named 'onnx'` or other missing modules:
+1. Make sure you're in the correct virtual environment (if using one)
+2. Run: `pip install -r requirements.txt`
+3. Verify installation: `pip list | grep onnx`
 
 ## Usage
 
