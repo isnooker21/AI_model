@@ -48,10 +48,10 @@ class MockMT5:
         date_to: datetime
     ) -> Optional[np.ndarray]:
         """
-        Generate synthetic OHLCV data for XAUUSD.
+        Generate synthetic OHLCV data for XAUUSDc.
         
         Args:
-            symbol: Trading symbol (e.g., 'XAUUSD')
+            symbol: Trading symbol (e.g., 'XAUUSDc')
             timeframe: MT5 timeframe constant
             date_from: Start date
             date_to: End date
@@ -59,10 +59,21 @@ class MockMT5:
         Returns:
             numpy array with OHLCV data
         """
-        # Calculate number of 15-minute bars
+        # Calculate number of bars based on timeframe
         time_diff = date_to - date_from
         total_minutes = int(time_diff.total_seconds() / 60)
-        num_bars = total_minutes // 15
+        
+        # Determine bar interval from timeframe
+        if timeframe == 5:
+            bar_interval = 5  # M5
+        elif timeframe == 15:
+            bar_interval = 15  # M15
+        elif timeframe == 60:
+            bar_interval = 60  # H1
+        else:
+            bar_interval = 5  # Default to M5
+        
+        num_bars = total_minutes // bar_interval
         
         if num_bars <= 0:
             return None
