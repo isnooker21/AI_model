@@ -1,8 +1,8 @@
 """
-Agent Module for XAUUSD Trading System
+Agent Module for XAUUSD Trading System (Candlestick-Only)
 
-This module implements a PPO (Proximal Policy Optimization) agent using
-Stable Baselines3 for reinforcement learning.
+This module implements a PPO agent with LSTM/Transformer architecture
+for learning patterns from candlestick sequences.
 
 Author: AI Trading System
 """
@@ -11,13 +11,248 @@ import os
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Tuple, Callable
+import torch
+import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.policies import ActorCriticPolicy, register_policy
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 import gymnasium as gym
 from trading_env import ForexTradingEnv
+
+
+class LSTMFeaturesExtractor(BaseFeaturesExtractor):
+    """
+    LSTM-based feature extractor for candlestick sequences.
+    Processes sequences of candles to extract temporal patterns.
+    """
+    
+    def __init__(
+        self,
+        observation_space: gym.spaces.Box,
+        features_dim: int = 256,
+        lstm_hidden_size: int = 128,
+        num_lstm_layers: int = 2,
+        sequence_length: int = 50,
+        candle_features: int = 7
+    ):
+        """
+        Initialize LSTM feature extractor.
+        
+        Args:
+            observation_space: Observation space from environment
+            features_dim: Dimension of output features
+            lstm_hidden_size: Hidden size of LSTM
+            num_lstm_layers: Number of LSTM layers
+            sequence_length: Length of candle sequence
+            candle_features: Number of features per candle
+        """
+        super().__init__(observation_space, features_dim)
+        
+        self.sequence_length = sequence_length
+        self.candle_features = candle_features
+        
+        # Calculate dimensions
+        # Observation: (sequence_length * candle_features + time_features + portfolio_state)
+        # We need to separate sequence from other features
+        total_dim = observation_space.shape[0]
+        other_features_dim = total_dim - (sequence_length * candle_features)
+        
+        # LSTM for processing candle sequence
+        self.lstm = nn.LSTM(
+            input_size=candle_features,
+            hidden_size=lstm_hidden_size,
+            num_layers=num_lstm_layers,
+            batch_first=True,
+            dropout=0.1 if num_lstm_layers > 1 else 0
+        )
+        
+        # Process other features (time + portfolio)
+        self.other_features_net = nn.Sequential(
+            nn.Linear(other_features_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32)
+        )
+        
+        # Combine LSTM output with other features
+        combined_dim = lstm_hidden_size + 32
+        self.combined_net = nn.Sequential(
+            nn.Linear(combined_dim, features_dim),
+            nn.ReLU(),
+            nn.Linear(features_dim, features_dim)
+        )
+    
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through LSTM feature extractor.
+        
+        Args:
+            observations: Batch of observations [batch_size, total_features]
+            
+        Returns:
+            Extracted features [batch_size, features_dim]
+        """
+        batch_size = observations.shape[0]
+        
+        # Separate sequence from other features
+        sequence_dim = self.sequence_length * self.candle_features
+        candle_sequence = observations[:, :sequence_dim]
+        other_features = observations[:, sequence_dim:]
+        
+        # Reshape sequence: [batch, sequence_length, candle_features]
+        candle_sequence = candle_sequence.view(batch_size, self.sequence_length, self.candle_features)
+        
+        # Process sequence through LSTM
+        lstm_out, (hidden, cell) = self.lstm(candle_sequence)
+        
+        # Use the last hidden state (or mean pooling)
+        # Option 1: Use last hidden state
+        lstm_features = lstm_out[:, -1, :]  # [batch, hidden_size]
+        
+        # Option 2: Mean pooling (alternative)
+        # lstm_features = lstm_out.mean(dim=1)  # [batch, hidden_size]
+        
+        # Process other features
+        other_features_processed = self.other_features_net(other_features)
+        
+        # Combine features
+        combined = torch.cat([lstm_features, other_features_processed], dim=1)
+        
+        # Final processing
+        output = self.combined_net(combined)
+        
+        return output
+
+
+class TransformerFeaturesExtractor(BaseFeaturesExtractor):
+    """
+    Transformer-based feature extractor for candlestick sequences.
+    Uses self-attention to find patterns in candle sequences.
+    """
+    
+    def __init__(
+        self,
+        observation_space: gym.spaces.Box,
+        features_dim: int = 256,
+        d_model: int = 128,
+        nhead: int = 8,
+        num_layers: int = 2,
+        sequence_length: int = 50,
+        candle_features: int = 7
+    ):
+        """
+        Initialize Transformer feature extractor.
+        
+        Args:
+            observation_space: Observation space from environment
+            features_dim: Dimension of output features
+            d_model: Model dimension
+            nhead: Number of attention heads
+            num_layers: Number of transformer layers
+            sequence_length: Length of candle sequence
+            candle_features: Number of features per candle
+        """
+        super().__init__(observation_space, features_dim)
+        
+        self.sequence_length = sequence_length
+        self.candle_features = candle_features
+        
+        total_dim = observation_space.shape[0]
+        other_features_dim = total_dim - (sequence_length * candle_features)
+        
+        # Input projection
+        self.input_projection = nn.Linear(candle_features, d_model)
+        
+        # Positional encoding (learnable)
+        self.pos_encoding = nn.Parameter(torch.randn(1, sequence_length, d_model))
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Process other features
+        self.other_features_net = nn.Sequential(
+            nn.Linear(other_features_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32)
+        )
+        
+        # Combine and output
+        combined_dim = d_model + 32
+        self.combined_net = nn.Sequential(
+            nn.Linear(combined_dim, features_dim),
+            nn.ReLU(),
+            nn.Linear(features_dim, features_dim)
+        )
+    
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through Transformer feature extractor.
+        
+        Args:
+            observations: Batch of observations [batch_size, total_features]
+            
+        Returns:
+            Extracted features [batch_size, features_dim]
+        """
+        batch_size = observations.shape[0]
+        
+        # Separate sequence from other features
+        sequence_dim = self.sequence_length * self.candle_features
+        candle_sequence = observations[:, :sequence_dim]
+        other_features = observations[:, sequence_dim:]
+        
+        # Reshape sequence: [batch, sequence_length, candle_features]
+        candle_sequence = candle_sequence.view(batch_size, self.sequence_length, self.candle_features)
+        
+        # Project to model dimension
+        x = self.input_projection(candle_sequence)
+        
+        # Add positional encoding
+        x = x + self.pos_encoding
+        
+        # Process through transformer
+        transformer_out = self.transformer(x)
+        
+        # Use mean pooling or last token
+        transformer_features = transformer_out.mean(dim=1)  # [batch, d_model]
+        # Alternative: transformer_features = transformer_out[:, -1, :]
+        
+        # Process other features
+        other_features_processed = self.other_features_net(other_features)
+        
+        # Combine
+        combined = torch.cat([transformer_features, other_features_processed], dim=1)
+        
+        # Final processing
+        output = self.combined_net(combined)
+        
+        return output
+
+
+# Register custom policies
+register_policy(
+    "LSTMPolicy",
+    ActorCriticPolicy,
+    "lstm",
+    LSTMFeaturesExtractor
+)
+
+register_policy(
+    "TransformerPolicy",
+    ActorCriticPolicy,
+    "transformer",
+    TransformerFeaturesExtractor
+)
 
 
 class SaveOnBestRewardCallback(BaseCallback):
@@ -32,33 +267,16 @@ class SaveOnBestRewardCallback(BaseCallback):
         verbose: int = 1,
         best_mean_reward: float = -np.inf
     ):
-        """
-        Initialize the callback.
-        
-        Args:
-            check_freq: Frequency of checks (in steps)
-            log_dir: Directory to save models
-            verbose: Verbosity level
-            best_mean_reward: Initial best mean reward
-        """
         super().__init__(verbose)
         self.check_freq = check_freq
         self.log_dir = log_dir
         self.best_mean_reward = best_mean_reward
         self.save_path = os.path.join(log_dir, 'best_model')
         
-        # Create log directory if it doesn't exist
         os.makedirs(log_dir, exist_ok=True)
     
     def _on_step(self) -> bool:
-        """
-        Called at each step of training.
-        
-        Returns:
-            True to continue training, False to stop
-        """
         if self.n_calls % self.check_freq == 0:
-            # Retrieve training reward
             if len(self.model.episode_reward_buffer) > 0:
                 mean_reward = np.mean(self.model.episode_reward_buffer)
                 
@@ -76,13 +294,14 @@ class SaveOnBestRewardCallback(BaseCallback):
 
 class TradingAgent:
     """
-    PPO-based trading agent for XAUUSD.
+    PPO-based trading agent with LSTM/Transformer architecture for candlestick sequences.
     """
     
     def __init__(
         self,
         env: ForexTradingEnv,
         model_path: Optional[str] = None,
+        architecture: str = "lstm",  # "lstm" or "transformer"
         learning_rate: float = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 64,
@@ -102,6 +321,7 @@ class TradingAgent:
         Args:
             env: Trading environment
             model_path: Path to load existing model (optional)
+            architecture: "lstm" or "transformer"
             learning_rate: Learning rate for PPO
             n_steps: Number of steps per update
             batch_size: Batch size for training
@@ -116,6 +336,7 @@ class TradingAgent:
             verbose: Verbosity level
         """
         self.env = env
+        self.architecture = architecture
         
         # Wrap environment in vectorized environment
         self.vec_env = DummyVecEnv([lambda: Monitor(env)])
@@ -125,9 +346,39 @@ class TradingAgent:
             print(f"Loading model from {model_path}")
             self.model = PPO.load(model_path, env=self.vec_env, verbose=verbose)
         else:
-            print("Creating new PPO model")
+            print(f"Creating new PPO model with {architecture.upper()} architecture")
+            
+            # Select policy based on architecture
+            if architecture.lower() == "lstm":
+                policy_name = "LSTMPolicy"
+                policy_kwargs = {
+                    "features_extractor_class": LSTMFeaturesExtractor,
+                    "features_extractor_kwargs": {
+                        "sequence_length": env.sequence_length,
+                        "candle_features": 7,
+                        "features_dim": 256,
+                        "lstm_hidden_size": 128,
+                        "num_lstm_layers": 2
+                    }
+                }
+            elif architecture.lower() == "transformer":
+                policy_name = "TransformerPolicy"
+                policy_kwargs = {
+                    "features_extractor_class": TransformerFeaturesExtractor,
+                    "features_extractor_kwargs": {
+                        "sequence_length": env.sequence_length,
+                        "candle_features": 7,
+                        "features_dim": 256,
+                        "d_model": 128,
+                        "nhead": 8,
+                        "num_layers": 2
+                    }
+                }
+            else:
+                raise ValueError(f"Unknown architecture: {architecture}. Use 'lstm' or 'transformer'")
+            
             self.model = PPO(
-                "MlpPolicy",
+                policy_name,
                 self.vec_env,
                 learning_rate=learning_rate,
                 n_steps=n_steps,
@@ -139,6 +390,7 @@ class TradingAgent:
                 ent_coef=ent_coef,
                 vf_coef=vf_coef,
                 max_grad_norm=max_grad_norm,
+                policy_kwargs=policy_kwargs,
                 tensorboard_log=tensorboard_log,
                 verbose=verbose,
                 device='cpu'  # Use 'cuda' if GPU available
@@ -164,10 +416,8 @@ class TradingAgent:
         """
         os.makedirs(log_dir, exist_ok=True)
         
-        # Create callbacks
         callbacks = []
         
-        # Save on best reward callback
         save_callback = SaveOnBestRewardCallback(
             check_freq=save_freq,
             log_dir=log_dir,
@@ -175,7 +425,6 @@ class TradingAgent:
         )
         callbacks.append(save_callback)
         
-        # Evaluation callback (if eval_env provided)
         if eval_env is not None:
             eval_vec_env = DummyVecEnv([lambda: Monitor(eval_env)])
             eval_callback = EvalCallback(
@@ -188,15 +437,14 @@ class TradingAgent:
             )
             callbacks.append(eval_callback)
         
-        # Train the model
         print(f"Starting training for {total_timesteps} timesteps...")
+        print(f"Architecture: {self.architecture.upper()}")
         self.model.learn(
             total_timesteps=total_timesteps,
             callback=callbacks,
             progress_bar=True
         )
         
-        # Save final model
         final_model_path = os.path.join(log_dir, 'final_model')
         self.model.save(final_model_path)
         print(f"Training completed. Final model saved to {final_model_path}")
@@ -238,10 +486,8 @@ class TradingAgent:
         Returns:
             Dictionary with evaluation metrics
         """
-        # Wrap environment
         eval_vec_env = DummyVecEnv([lambda: eval_env])
         
-        # Evaluate policy
         mean_reward, std_reward = evaluate_policy(
             self.model,
             eval_vec_env,
@@ -250,14 +496,12 @@ class TradingAgent:
             render=render
         )
         
-        # Run additional evaluation to collect detailed metrics
         results = {
             'mean_reward': mean_reward,
             'std_reward': std_reward,
             'episodes': n_episodes
         }
         
-        # Collect detailed statistics
         total_equity = []
         total_trades = []
         win_rates = []
@@ -274,7 +518,6 @@ class TradingAgent:
                 done = terminated or truncated
                 episode_reward += reward
             
-            # Collect final statistics
             final_info = eval_env._get_info()
             total_equity.append(final_info['equity'])
             total_trades.append(final_info['total_trades'])
@@ -287,28 +530,18 @@ class TradingAgent:
             'mean_total_trades': np.mean(total_trades),
             'mean_win_rate': np.mean(win_rates),
             'mean_final_balance': np.mean(final_balances),
-            'total_return_pct': (np.mean(final_equity) - eval_env.initial_balance) / eval_env.initial_balance * 100
+            'total_return_pct': (np.mean(total_equity) - eval_env.initial_balance) / eval_env.initial_balance * 100
         })
         
         return results
     
     def save(self, path: str) -> None:
-        """
-        Save the model to disk.
-        
-        Args:
-            path: Path to save the model
-        """
+        """Save the model to disk."""
         self.model.save(path)
         print(f"Model saved to {path}")
     
     def load(self, path: str) -> None:
-        """
-        Load the model from disk.
-        
-        Args:
-            path: Path to load the model from
-        """
+        """Load the model from disk."""
         self.model = PPO.load(path, env=self.vec_env)
         print(f"Model loaded from {path}")
 
@@ -325,7 +558,6 @@ def split_data_for_training(
         data: Full dataset
         train_ratio: Ratio of data for training
         val_ratio: Ratio of data for validation
-        test_ratio: Remaining data for testing (calculated automatically)
         
     Returns:
         Tuple of (train_data, val_data, test_data)
@@ -344,20 +576,17 @@ def split_data_for_training(
 
 
 if __name__ == "__main__":
-    # Example usage
     from data_provider import load_data_from_csv
     
-    # Load data
     print("Loading data...")
     data = load_data_from_csv("data/xauusd_m15.csv")
     
-    # Split data
     train_data, val_data, test_data = split_data_for_training(data)
     
-    # Create environments
     print("Creating training environment...")
     train_env = ForexTradingEnv(
         data=train_data,
+        sequence_length=50,
         initial_balance=10000.0,
         lot_size=0.01,
         max_positions=5
@@ -366,19 +595,19 @@ if __name__ == "__main__":
     print("Creating validation environment...")
     val_env = ForexTradingEnv(
         data=val_data,
+        sequence_length=50,
         initial_balance=10000.0,
         lot_size=0.01,
         max_positions=5
     )
     
-    # Create agent
-    print("Creating agent...")
+    print("Creating agent with LSTM architecture...")
     agent = TradingAgent(
         env=train_env,
+        architecture="lstm",  # or "transformer"
         tensorboard_log="logs/tensorboard"
     )
     
-    # Train agent
     print("Starting training...")
     agent.train(
         total_timesteps=100000,
@@ -388,10 +617,10 @@ if __name__ == "__main__":
         eval_freq=50000
     )
     
-    # Evaluate on test set
     print("Evaluating on test set...")
     test_env = ForexTradingEnv(
         data=test_data,
+        sequence_length=50,
         initial_balance=10000.0,
         lot_size=0.01,
         max_positions=5
@@ -401,4 +630,3 @@ if __name__ == "__main__":
     print("\nEvaluation Results:")
     for key, value in results.items():
         print(f"{key}: {value:.4f}")
-

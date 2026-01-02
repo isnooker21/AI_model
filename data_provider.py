@@ -1,8 +1,8 @@
 """
-Data Provider Module for XAUUSD Trading System
+Data Provider Module for XAUUSD Trading System (Candlestick-Only)
 
 This module handles data fetching from MetaTrader5 and provides
-a mock implementation for Mac development environments.
+candlestick-only data without any lagging indicators.
 
 Author: AI Trading System
 """
@@ -22,14 +22,6 @@ try:
 except ImportError:
     MT5_AVAILABLE = False
     print("Warning: MetaTrader5 not available. Using mock data provider for development.")
-
-# Try to import ta-lib, fallback to manual calculations
-try:
-    import talib
-    TALIB_AVAILABLE = True
-except ImportError:
-    TALIB_AVAILABLE = False
-    print("Warning: TA-Lib not available. Using manual indicator calculations.")
 
 
 class MockMT5:
@@ -126,111 +118,79 @@ if not MT5_AVAILABLE:
     mt5 = MockMT5()
 
 
-def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
+def calculate_candlestick_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calculate Relative Strength Index (RSI).
+    Calculate candlestick features: Body Size, Upper Wick, Lower Wick, Price Change.
     
     Args:
-        prices: Price series (typically close prices)
-        period: RSI period (default 14)
+        df: DataFrame with OHLC data
         
     Returns:
-        RSI values as pandas Series
+        DataFrame with additional candlestick features
     """
-    if TALIB_AVAILABLE:
-        return pd.Series(talib.RSI(prices.values, timeperiod=period), index=prices.index)
+    df = df.copy()
     
-    # Manual RSI calculation
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    # Body size (absolute value)
+    df['body_size'] = abs(df['close'] - df['open'])
     
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)  # Fill NaN with neutral value
+    # Upper wick (high - max(open, close))
+    df['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
+    
+    # Lower wick (min(open, close) - low)
+    df['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
+    
+    # Price change relative to previous candle (close - previous close)
+    df['price_change'] = df['close'].diff()
+    
+    # Normalize price change by previous close (percentage change)
+    df['price_change_pct'] = df['price_change'] / df['close'].shift(1)
+    df['price_change_pct'] = df['price_change_pct'].fillna(0)
+    
+    # Candle direction (1 for bullish, -1 for bearish, 0 for doji)
+    df['candle_direction'] = np.where(
+        df['close'] > df['open'], 1,
+        np.where(df['close'] < df['open'], -1, 0)
+    )
+    
+    # Body to range ratio (how much of the range is body)
+    df['range'] = df['high'] - df['low']
+    df['body_to_range'] = df['body_size'] / (df['range'] + 1e-8)  # Avoid division by zero
+    
+    return df
 
 
-def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+def get_time_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calculate Average True Range (ATR).
+    Extract time-based features for market session context.
     
     Args:
-        high: High prices
-        low: Low prices
-        close: Close prices
-        period: ATR period (default 14)
+        df: DataFrame with datetime index
         
     Returns:
-        ATR values as pandas Series
+        DataFrame with time features
     """
-    if TALIB_AVAILABLE:
-        return pd.Series(talib.ATR(high.values, low.values, close.values, timeperiod=period), 
-                        index=high.index)
+    df = df.copy()
     
-    # Manual ATR calculation
-    tr1 = high - low
-    tr2 = abs(high - close.shift())
-    tr3 = abs(low - close.shift())
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    return atr.bfill()
-
-
-def calculate_bollinger_bands(
-    prices: pd.Series,
-    period: int = 20,
-    std_dev: float = 2.0
-) -> Tuple[pd.Series, pd.Series, pd.Series]:
-    """
-    Calculate Bollinger Bands.
+    # Hour of day (0-23)
+    df['hour'] = df.index.hour
     
-    Args:
-        prices: Price series (typically close prices)
-        period: Moving average period (default 20)
-        std_dev: Standard deviation multiplier (default 2.0)
-        
-    Returns:
-        Tuple of (upper_band, middle_band, lower_band)
-    """
-    if TALIB_AVAILABLE:
-        upper, middle, lower = talib.BBANDS(
-            prices.values,
-            timeperiod=period,
-            nbdevup=std_dev,
-            nbdevdn=std_dev,
-            matype=0
-        )
-        return (
-            pd.Series(upper, index=prices.index),
-            pd.Series(middle, index=prices.index),
-            pd.Series(lower, index=prices.index)
-        )
+    # Minute of hour (0-59)
+    df['minute'] = df.index.minute
     
-    # Manual Bollinger Bands calculation
-    middle = prices.rolling(window=period).mean()
-    std = prices.rolling(window=period).std()
-    upper = middle + (std * std_dev)
-    lower = middle - (std * std_dev)
+    # Day of week (0=Monday, 6=Sunday)
+    df['day_of_week'] = df.index.dayofweek
     
-    return upper.bfill(), middle.bfill(), lower.bfill()
-
-
-def get_session(hour: int) -> str:
-    """
-    Determine trading session based on hour (UTC).
+    # Market session (normalized to 0-1 for each session)
+    # Asia: 0-8 UTC, Europe: 8-16 UTC, US: 16-24 UTC
+    df['session_asia'] = ((df['hour'] >= 0) & (df['hour'] < 8)).astype(float)
+    df['session_europe'] = ((df['hour'] >= 8) & (df['hour'] < 16)).astype(float)
+    df['session_us'] = ((df['hour'] >= 16) & (df['hour'] < 24)).astype(float)
     
-    Args:
-        hour: Hour in UTC (0-23)
-        
-    Returns:
-        Session name: 'Asia', 'Europe', or 'US'
-    """
-    if 0 <= hour < 8:
-        return 'Asia'
-    elif 8 <= hour < 16:
-        return 'Europe'
-    else:
-        return 'US'
+    # Normalize hour to 0-1 (circular encoding)
+    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
+    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+    
+    return df
 
 
 def fetch_historical_data(
@@ -242,6 +202,7 @@ def fetch_historical_data(
 ) -> pd.DataFrame:
     """
     Fetch historical data from MetaTrader5 or generate mock data.
+    Returns only raw candlestick data with calculated features.
     
     Args:
         symbol: Trading symbol (default: XAUUSD)
@@ -251,7 +212,7 @@ def fetch_historical_data(
         lookback_days: Number of days to look back if date_from not provided
         
     Returns:
-        DataFrame with OHLCV data and technical indicators
+        DataFrame with OHLCV data and candlestick features
     """
     # Initialize MT5 connection
     if not mt5.initialize():
@@ -289,30 +250,20 @@ def fetch_historical_data(
         # Rename columns for consistency
         df.columns = ['open', 'high', 'low', 'close', 'tick_volume', 'spread', 'real_volume']
         
-        # Calculate technical indicators
-        print("Calculating technical indicators...")
-        df['rsi'] = calculate_rsi(df['close'], period=14)
-        df['atr'] = calculate_atr(df['high'], df['low'], df['close'], period=14)
+        # Calculate candlestick features
+        print("Calculating candlestick features...")
+        df = calculate_candlestick_features(df)
         
-        bb_upper, bb_middle, bb_lower = calculate_bollinger_bands(df['close'], period=20, std_dev=2.0)
-        df['bb_upper'] = bb_upper
-        df['bb_middle'] = bb_middle
-        df['bb_lower'] = bb_lower
-        df['bb_width'] = (bb_upper - bb_lower) / bb_middle  # Normalized BB width
+        # Add time features
+        print("Adding time-based features...")
+        df = get_time_features(df)
         
-        # Add session information
-        df['session'] = df.index.hour.apply(get_session)
-        df['session_asia'] = (df['session'] == 'Asia').astype(int)
-        df['session_europe'] = (df['session'] == 'Europe').astype(int)
-        df['session_us'] = (df['session'] == 'US').astype(int)
-        
-        # Drop session string column (keep only one-hot encoded)
-        df.drop('session', axis=1, inplace=True)
-        
-        # Remove rows with NaN values (from indicator calculations)
+        # Remove rows with NaN values (from feature calculations)
         df = df.dropna()
         
-        print(f"Successfully fetched {len(df)} bars of data")
+        print(f"Successfully fetched {len(df)} bars of candlestick data")
+        print(f"Features: {df.columns.tolist()}")
+        
         return df
         
     except Exception as e:
@@ -354,7 +305,7 @@ def load_data_from_csv(filepath: str = "data/xauusd_m15.csv") -> pd.DataFrame:
 
 if __name__ == "__main__":
     # Test data fetching
-    print("Testing data provider...")
+    print("Testing candlestick-only data provider...")
     try:
         df = fetch_historical_data(symbol="XAUUSD", lookback_days=30)
         print(f"\nData shape: {df.shape}")
@@ -369,4 +320,3 @@ if __name__ == "__main__":
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
-

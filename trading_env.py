@@ -1,8 +1,9 @@
 """
 Trading Environment Module for XAUUSD Reinforcement Learning System
+(Candlestick-Only Price Action Approach)
 
-This module implements a Gymnasium environment for forex trading with
-recovery logic, dynamic exits, and comprehensive state/action spaces.
+This module implements a Gymnasium environment using raw candlestick sequences
+without any lagging indicators. The AI learns from price action patterns.
 
 Author: AI Trading System
 """
@@ -17,12 +18,12 @@ from collections import deque
 
 class ForexTradingEnv(gym.Env):
     """
-    Gymnasium environment for XAUUSD trading with recovery and dynamic exit management.
+    Gymnasium environment for XAUUSD trading using candlestick sequences.
     
     State Space:
-        - OHLC data (normalized)
-        - Technical indicators (RSI, ATR, Bollinger Bands)
-        - Session indicators (Asia/Europe/US)
+        - Sequence of last 50 candles
+        - For each candle: Body Size, Upper Wick, Lower Wick, Price Change
+        - Time of Day features
         - Portfolio state (Balance, Equity, Floating P/L, Positions, Avg Entry, Drawdown %)
     
     Action Space:
@@ -39,6 +40,7 @@ class ForexTradingEnv(gym.Env):
     def __init__(
         self,
         data: pd.DataFrame,
+        sequence_length: int = 50,
         initial_balance: float = 10000.0,
         lot_size: float = 0.01,
         max_positions: int = 5,
@@ -54,7 +56,8 @@ class ForexTradingEnv(gym.Env):
         Initialize the trading environment.
         
         Args:
-            data: DataFrame with OHLC and technical indicators
+            data: DataFrame with OHLC and candlestick features
+            sequence_length: Number of candles in the sequence (default: 50)
             initial_balance: Starting account balance
             lot_size: Size of each position (in lots)
             max_positions: Maximum number of concurrent positions
@@ -69,6 +72,7 @@ class ForexTradingEnv(gym.Env):
         super().__init__()
         
         self.data = data.copy()
+        self.sequence_length = sequence_length
         self.initial_balance = initial_balance
         self.lot_size = lot_size
         self.max_positions = max_positions
@@ -84,14 +88,21 @@ class ForexTradingEnv(gym.Env):
         self.pip_value = 0.01  # For XAUUSD, 1 pip = $0.01 per lot
         self.point_value = 0.01
         
-        # Feature columns (excluding OHLC which we'll handle separately)
-        self.feature_columns = [
-            'rsi', 'atr', 'bb_upper', 'bb_middle', 'bb_lower', 'bb_width',
+        # Required candlestick feature columns
+        self.candle_features = [
+            'body_size', 'upper_wick', 'lower_wick', 
+            'price_change', 'price_change_pct', 'candle_direction',
+            'body_to_range'
+        ]
+        
+        # Time features
+        self.time_features = [
+            'hour_sin', 'hour_cos', 'day_of_week',
             'session_asia', 'session_europe', 'session_us'
         ]
         
         # Ensure all required columns exist
-        required_cols = ['open', 'high', 'low', 'close'] + self.feature_columns
+        required_cols = ['open', 'high', 'low', 'close'] + self.candle_features + self.time_features
         missing_cols = [col for col in required_cols if col not in self.data.columns]
         if missing_cols:
             raise ValueError(f"Missing required columns: {missing_cols}")
@@ -104,15 +115,25 @@ class ForexTradingEnv(gym.Env):
         self.feature_stats = self._calculate_feature_stats()
         
         # State space dimensions
-        # OHLC (4) + Features (9) + Portfolio State (6) = 19 dimensions
-        n_ohlc = 4
-        n_features = len(self.feature_columns)
+        # Sequence: 50 candles × 7 features = 350
+        # Time features: 6 (current candle)
+        # Portfolio state: 6
+        # Total: 350 + 6 + 6 = 362 dimensions (flattened)
+        # OR we can use a 2D shape: (sequence_length, features_per_candle + time_features + portfolio_state)
+        
+        # For LSTM/Transformer, we'll use a 2D observation space
+        # Shape: (sequence_length, features_per_candle)
+        n_candle_features = len(self.candle_features)
+        n_time_features = len(self.time_features)
         n_portfolio = 6  # Balance, Equity, Floating P/L, Num Positions, Avg Entry, Drawdown %
         
+        # Observation: (sequence_length, n_candle_features + n_time_features + n_portfolio)
+        # But portfolio state is same for all candles, so we'll add it separately
+        # Actually, let's flatten: sequence of candles + current time + portfolio
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(n_ohlc + n_features + n_portfolio,),
+            shape=(sequence_length * n_candle_features + n_time_features + n_portfolio,),
             dtype=np.float32
         )
         
@@ -123,23 +144,15 @@ class ForexTradingEnv(gym.Env):
         self.reset()
     
     def _normalize_data(self) -> None:
-        """Normalize OHLC and feature data using rolling statistics."""
+        """Normalize candlestick features using rolling statistics."""
         # Normalize OHLC using rolling mean and std
         for col in ['open', 'high', 'low', 'close']:
             rolling_mean = self.data[col].rolling(window=100, min_periods=1).mean()
             rolling_std = self.data[col].rolling(window=100, min_periods=1).std()
             self.data[f'{col}_normalized'] = (self.data[col] - rolling_mean) / (rolling_std + 1e-8)
         
-        # Normalize RSI (0-100 scale, normalize to -1 to 1)
-        if 'rsi' in self.data.columns:
-            self.data['rsi_normalized'] = (self.data['rsi'] - 50) / 50
-        
-        # Normalize ATR relative to price
-        if 'atr' in self.data.columns and 'close' in self.data.columns:
-            self.data['atr_normalized'] = self.data['atr'] / (self.data['close'] + 1e-8)
-        
-        # Normalize Bollinger Bands
-        for col in ['bb_upper', 'bb_middle', 'bb_lower', 'bb_width']:
+        # Normalize candlestick features
+        for col in self.candle_features:
             if col in self.data.columns:
                 rolling_mean = self.data[col].rolling(window=100, min_periods=1).mean()
                 rolling_std = self.data[col].rolling(window=100, min_periods=1).std()
@@ -148,7 +161,7 @@ class ForexTradingEnv(gym.Env):
     def _calculate_feature_stats(self) -> Dict:
         """Calculate statistics for feature normalization."""
         stats = {}
-        for col in self.feature_columns:
+        for col in self.candle_features + self.time_features:
             if col in self.data.columns:
                 stats[col] = {
                     'mean': self.data[col].mean(),
@@ -176,7 +189,7 @@ class ForexTradingEnv(gym.Env):
         super().reset(seed=seed)
         
         # Reset trading state
-        self.current_step = 0
+        self.current_step = self.sequence_length  # Start after we have enough history
         self.balance = self.initial_balance
         self.equity = self.initial_balance
         self.realized_pnl = 0.0
@@ -184,7 +197,6 @@ class ForexTradingEnv(gym.Env):
         
         # Position tracking
         self.positions: List[Dict] = []  # List of open positions
-        # Each position: {'type': 'buy'/'sell', 'entry_price': float, 'lot_size': float, 'entry_step': int}
         
         # Performance tracking
         self.total_trades = 0
@@ -198,6 +210,10 @@ class ForexTradingEnv(gym.Env):
         self.action_history = []
         self.reward_history = []
         
+        # Price prediction tracking (for reward calculation)
+        self.last_prediction = None
+        self.last_prediction_step = None
+        
         observation = self._get_observation()
         info = self._get_info()
         
@@ -205,49 +221,59 @@ class ForexTradingEnv(gym.Env):
     
     def _get_observation(self) -> np.ndarray:
         """
-        Get current observation (state).
+        Get current observation (state) - sequence of last 50 candles.
         
         Returns:
-            Observation array: [OHLC, Features, Portfolio State]
+            Observation array: [Sequence of 50 candles, Time features, Portfolio State]
         """
         if self.current_step >= len(self.data):
             # Return last valid observation
             self.current_step = len(self.data) - 1
         
-        row = self.data.iloc[self.current_step]
+        # Get sequence of last N candles
+        start_idx = max(0, self.current_step - self.sequence_length + 1)
+        end_idx = self.current_step + 1
         
-        # OHLC data (normalized if available, otherwise raw)
-        if self.normalize_features:
-            ohlc = np.array([
-                row.get('open_normalized', row['open']),
-                row.get('high_normalized', row['high']),
-                row.get('low_normalized', row['low']),
-                row.get('close_normalized', row['close'])
-            ], dtype=np.float32)
-        else:
-            ohlc = np.array([
-                row['open'],
-                row['high'],
-                row['low'],
-                row['close']
-            ], dtype=np.float32)
+        sequence_data = self.data.iloc[start_idx:end_idx]
         
-        # Feature data
-        features = []
-        for col in self.feature_columns:
-            if self.normalize_features and f'{col}_normalized' in row:
-                features.append(row[f'{col}_normalized'])
-            else:
-                # Normalize on the fly
-                val = row[col]
-                if col == 'rsi':
-                    features.append((val - 50) / 50)  # Normalize RSI
-                elif col == 'atr':
-                    features.append(val / (row['close'] + 1e-8))  # Normalize ATR
+        # If we don't have enough history, pad with first candle
+        if len(sequence_data) < self.sequence_length:
+            padding = self.sequence_length - len(sequence_data)
+            first_candle = sequence_data.iloc[0:1]
+            padding_data = pd.concat([first_candle] * padding, ignore_index=True)
+            sequence_data = pd.concat([padding_data, sequence_data], ignore_index=True)
+        
+        # Extract candlestick features for each candle in sequence
+        candle_sequence = []
+        for idx in range(self.sequence_length):
+            row = sequence_data.iloc[idx]
+            
+            # Get candlestick features (normalized if available)
+            candle_features = []
+            for col in self.candle_features:
+                if self.normalize_features and f'{col}_normalized' in row:
+                    candle_features.append(row[f'{col}_normalized'])
                 else:
-                    features.append(val)
+                    # Normalize on the fly
+                    val = row[col]
+                    if col in ['price_change_pct', 'body_to_range']:
+                        # Already normalized
+                        candle_features.append(val)
+                    else:
+                        # Normalize by price
+                        if col in ['body_size', 'upper_wick', 'lower_wick', 'price_change']:
+                            norm_val = val / (row['close'] + 1e-8)
+                            candle_features.append(norm_val)
+                        else:
+                            candle_features.append(val)
+            
+            candle_sequence.extend(candle_features)
         
-        features = np.array(features, dtype=np.float32)
+        # Get current time features
+        current_row = self.data.iloc[self.current_step]
+        time_features = []
+        for col in self.time_features:
+            time_features.append(current_row[col])
         
         # Portfolio state
         floating_pnl = self._calculate_floating_pnl()
@@ -266,19 +292,23 @@ class ForexTradingEnv(gym.Env):
             total_lots = sum(pos['lot_size'] for pos in self.positions)
             avg_entry = sum(pos['entry_price'] * pos['lot_size'] for pos in self.positions) / total_lots
         else:
-            avg_entry = row['close']  # Use current price if no positions
+            avg_entry = current_row['close']  # Use current price if no positions
         
         portfolio_state = np.array([
             self.balance / self.initial_balance,  # Normalized balance
             current_equity / self.initial_balance,  # Normalized equity
             floating_pnl / self.initial_balance,  # Normalized floating P/L
             len(self.positions) / self.max_positions,  # Normalized position count
-            (avg_entry - row['close']) / row['close'],  # Normalized entry price difference
+            (avg_entry - current_row['close']) / current_row['close'],  # Normalized entry price difference
             drawdown_pct  # Drawdown percentage
         ], dtype=np.float32)
         
         # Combine all observations
-        observation = np.concatenate([ohlc, features, portfolio_state])
+        observation = np.concatenate([
+            np.array(candle_sequence, dtype=np.float32),
+            np.array(time_features, dtype=np.float32),
+            portfolio_state
+        ])
         
         return observation
     
@@ -364,6 +394,33 @@ class ForexTradingEnv(gym.Env):
         
         return True
     
+    def _detect_market_regime(self) -> str:
+        """
+        Detect market regime (Trend/Sideways) from candlestick sequence.
+        This is a helper function - the AI will learn this pattern.
+        
+        Returns:
+            'trend' or 'sideways'
+        """
+        if self.current_step < self.sequence_length:
+            return 'sideways'
+        
+        # Get recent candles
+        recent_data = self.data.iloc[max(0, self.current_step - 20):self.current_step + 1]
+        
+        # Simple trend detection: check if price is consistently moving in one direction
+        price_changes = recent_data['close'].diff().dropna()
+        positive_changes = (price_changes > 0).sum()
+        negative_changes = (price_changes < 0).sum()
+        
+        # If 70%+ moves in one direction, consider it a trend
+        if positive_changes / len(price_changes) > 0.7:
+            return 'trend'
+        elif negative_changes / len(price_changes) > 0.7:
+            return 'trend'
+        else:
+            return 'sideways'
+    
     def _execute_trade(self, action: int) -> Dict:
         """
         Execute a trading action.
@@ -392,7 +449,6 @@ class ForexTradingEnv(gym.Env):
                 trade_result['message'] = 'Max positions reached'
                 return trade_result
             
-            # Open new buy position
             commission = self.commission_per_lot * self.lot_size
             if self.balance < commission:
                 trade_result['message'] = 'Insufficient balance for commission'
@@ -418,7 +474,6 @@ class ForexTradingEnv(gym.Env):
                 trade_result['message'] = 'Max positions reached'
                 return trade_result
             
-            # Open new sell position
             commission = self.commission_per_lot * self.lot_size
             if self.balance < commission:
                 trade_result['message'] = 'Insufficient balance for commission'
@@ -444,13 +499,11 @@ class ForexTradingEnv(gym.Env):
                 trade_result['message'] = 'Recovery buy not allowed'
                 return trade_result
             
-            # Calculate new average entry price
             avg_entry = self._calculate_avg_entry_price('buy')
             total_lots = sum(pos['lot_size'] for pos in self.positions if pos['type'] == 'buy')
             new_lots = total_lots + self.lot_size
             new_avg_entry = (avg_entry * total_lots + current_price * self.lot_size) / new_lots
             
-            # Open recovery position
             commission = self.commission_per_lot * self.lot_size
             if self.balance < commission:
                 trade_result['message'] = 'Insufficient balance for commission'
@@ -475,13 +528,11 @@ class ForexTradingEnv(gym.Env):
                 trade_result['message'] = 'Recovery sell not allowed'
                 return trade_result
             
-            # Calculate new average entry price
             avg_entry = self._calculate_avg_entry_price('sell')
             total_lots = sum(pos['lot_size'] for pos in self.positions if pos['type'] == 'sell')
             new_lots = total_lots + self.lot_size
             new_avg_entry = (avg_entry * total_lots + current_price * self.lot_size) / new_lots
             
-            # Open recovery position
             commission = self.commission_per_lot * self.lot_size
             if self.balance < commission:
                 trade_result['message'] = 'Insufficient balance for commission'
@@ -506,7 +557,6 @@ class ForexTradingEnv(gym.Env):
                 trade_result['message'] = 'No positions to close'
                 return trade_result
             
-            # Close all positions and realize P/L
             total_pnl = 0.0
             positions_to_close = self.positions.copy()
             
@@ -522,7 +572,6 @@ class ForexTradingEnv(gym.Env):
                 
                 total_pnl += pnl
             
-            # Deduct commission for closing
             close_commission = self.commission_per_lot * sum(pos['lot_size'] for pos in positions_to_close)
             net_pnl = total_pnl - close_commission
             
@@ -530,14 +579,12 @@ class ForexTradingEnv(gym.Env):
             self.realized_pnl += net_pnl
             self.total_commission += close_commission
             
-            # Update trade statistics
             for position in positions_to_close:
                 if net_pnl > 0:
                     self.winning_trades += 1
                 else:
                     self.losing_trades += 1
             
-            # Clear positions
             self.positions = []
             
             trade_result['executed'] = True
@@ -550,6 +597,7 @@ class ForexTradingEnv(gym.Env):
     def _calculate_reward(self, trade_result: Dict) -> float:
         """
         Calculate reward based on trading action and portfolio state.
+        Rewards correct price direction prediction and penalizes drawdowns.
         
         Args:
             trade_result: Result from trade execution
@@ -564,24 +612,43 @@ class ForexTradingEnv(gym.Env):
         
         # Reward for realized profit
         if trade_result.get('pnl', 0) > 0:
-            reward += trade_result['pnl'] / self.initial_balance * 10.0  # Scale reward
+            reward += trade_result['pnl'] / self.initial_balance * 10.0
         
         # Penalty for realized loss
         elif trade_result.get('pnl', 0) < 0:
-            reward += trade_result['pnl'] / self.initial_balance * 10.0  # Negative reward
+            reward += trade_result['pnl'] / self.initial_balance * 10.0
+        
+        # Reward for correct price direction prediction (if we opened a position)
+        if trade_result['executed'] and trade_result['action'] in [1, 2]:
+            # Check if price moved in predicted direction
+            if self.current_step < len(self.data) - 1:
+                current_price = self.data.iloc[self.current_step]['close']
+                next_price = self.data.iloc[self.current_step + 1]['close']
+                price_change = next_price - current_price
+                
+                if trade_result['action'] == 1:  # Buy - expect price to go up
+                    if price_change > 0:
+                        reward += 0.1  # Small reward for correct prediction
+                    else:
+                        reward -= 0.05  # Small penalty for wrong prediction
+                elif trade_result['action'] == 2:  # Sell - expect price to go down
+                    if price_change < 0:
+                        reward += 0.1
+                    else:
+                        reward -= 0.05
         
         # Penalty for high drawdown
         current_equity = self.balance + self._calculate_floating_pnl()
         drawdown_pct = (self.peak_equity - current_equity) / self.peak_equity if self.peak_equity > 0 else 0.0
         
         if drawdown_pct > 0.10:  # 10% drawdown
-            reward -= drawdown_pct * 5.0  # Penalty increases with drawdown
+            reward -= drawdown_pct * 5.0
         
-        # Penalty for excessive positions (encourage position management)
+        # Penalty for excessive positions
         if len(self.positions) >= self.max_positions:
             reward -= 0.1
         
-        # Small reward for closing positions (encourage active management)
+        # Small reward for closing positions
         if trade_result['action'] == 5 and trade_result['executed']:
             reward += 0.05
         
@@ -598,7 +665,6 @@ class ForexTradingEnv(gym.Env):
             observation, reward, terminated, truncated, info
         """
         if self.current_step >= len(self.data) - 1:
-            # End of data
             terminated = True
             truncated = False
         else:
@@ -615,16 +681,14 @@ class ForexTradingEnv(gym.Env):
         # Check termination conditions
         current_equity = self.balance + self._calculate_floating_pnl()
         
-        # Terminate if balance is too low (account blown)
-        if current_equity < self.initial_balance * 0.1:  # Less than 10% of initial
+        if current_equity < self.initial_balance * 0.1:
             terminated = True
-            reward -= 10.0  # Large penalty for account blow-up
+            reward -= 10.0
         
-        # Terminate if max drawdown exceeded
         drawdown_pct = (self.peak_equity - current_equity) / self.peak_equity if self.peak_equity > 0 else 0.0
         if drawdown_pct >= self.max_drawdown_pct:
             terminated = True
-            reward -= 5.0  # Penalty for exceeding max drawdown
+            reward -= 5.0
         
         # Get new observation
         observation = self._get_observation()
@@ -638,6 +702,7 @@ class ForexTradingEnv(gym.Env):
         # Prepare info
         info = self._get_info()
         info.update(trade_result)
+        info['market_regime'] = self._detect_market_regime()
         
         return observation, reward, terminated, truncated, info
     
@@ -671,4 +736,3 @@ class ForexTradingEnv(gym.Env):
     def close(self) -> None:
         """Clean up environment resources."""
         pass
-

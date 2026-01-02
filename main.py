@@ -1,7 +1,8 @@
 """
-Main Orchestration Script for XAUUSD Trading System
+Main Orchestration Script for XAUUSD Trading System (Candlestick-Only)
 
 This script coordinates data fetching, model training, evaluation, and ONNX export.
+Uses raw candlestick data (Price Action) without lagging indicators.
 
 Author: AI Trading System
 """
@@ -76,6 +77,8 @@ def train_model(
     initial_balance: float = 10000.0,
     lot_size: float = 0.01,
     max_positions: int = 5,
+    sequence_length: int = 50,
+    architecture: str = "lstm",  # "lstm" or "transformer"
     log_dir: str = "logs",
     model_dir: str = "models",
     save_freq: int = 10000,
@@ -113,6 +116,7 @@ def train_model(
     print("\nCreating training environment...")
     train_env = ForexTradingEnv(
         data=train_data,
+        sequence_length=sequence_length,
         initial_balance=initial_balance,
         lot_size=lot_size,
         max_positions=max_positions,
@@ -123,6 +127,7 @@ def train_model(
     print("Creating validation environment...")
     val_env = ForexTradingEnv(
         data=val_data,
+        sequence_length=sequence_length,
         initial_balance=initial_balance,
         lot_size=lot_size,
         max_positions=max_positions,
@@ -131,9 +136,10 @@ def train_model(
     )
     
     # Create agent
-    print("\nInitializing PPO agent...")
+    print(f"\nInitializing PPO agent with {architecture.upper()} architecture...")
     agent = TradingAgent(
         env=train_env,
+        architecture=architecture,
         learning_rate=3e-4,
         n_steps=2048,
         batch_size=64,
@@ -165,6 +171,7 @@ def train_model(
 def evaluate_model(
     agent: TradingAgent,
     test_data: pd.DataFrame,
+    sequence_length: int = 50,
     initial_balance: float = 10000.0,
     lot_size: float = 0.01,
     max_positions: int = 5,
@@ -192,6 +199,7 @@ def evaluate_model(
     print("\nCreating test environment...")
     test_env = ForexTradingEnv(
         data=test_data,
+        sequence_length=sequence_length,
         initial_balance=initial_balance,
         lot_size=lot_size,
         max_positions=max_positions,
@@ -224,7 +232,7 @@ def evaluate_model(
 def export_to_onnx(
     model_path: str,
     output_path: str = "models/trading_model.onnx",
-    input_shape: tuple = (19,),
+    input_shape: tuple = (362,),  # 50 candles * 7 features + 6 time + 6 portfolio
     create_mql5_example: bool = True
 ) -> str:
     """
@@ -336,6 +344,19 @@ def main():
         default=5,
         help="Maximum concurrent positions"
     )
+    parser.add_argument(
+        "--sequence_length",
+        type=int,
+        default=50,
+        help="Number of candles in sequence (default: 50)"
+    )
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        choices=["lstm", "transformer"],
+        default="lstm",
+        help="Neural network architecture: 'lstm' or 'transformer'"
+    )
     
     # Model arguments
     parser.add_argument(
@@ -378,10 +399,12 @@ def main():
     os.makedirs(os.path.dirname(args.data_file) if os.path.dirname(args.data_file) else '.', exist_ok=True)
     
     print("="*60)
-    print("XAUUSD AUTONOMOUS TRADING SYSTEM")
+    print("XAUUSD AUTONOMOUS TRADING SYSTEM (CANDLESTICK-ONLY)")
     print("="*60)
     print(f"Mode: {args.mode}")
     print(f"Symbol: {args.symbol}")
+    print(f"Architecture: {args.architecture.upper()}")
+    print(f"Sequence Length: {args.sequence_length} candles")
     print(f"Initial Balance: ${args.initial_balance:,.2f}")
     print(f"Lot Size: {args.lot_size}")
     print(f"Max Positions: {args.max_positions}")
@@ -407,6 +430,8 @@ def main():
             initial_balance=args.initial_balance,
             lot_size=args.lot_size,
             max_positions=args.max_positions,
+            sequence_length=args.sequence_length,
+            architecture=args.architecture,
             log_dir=args.log_dir,
             model_dir=args.model_dir
         )
@@ -420,6 +445,7 @@ def main():
             # Create test environment
             test_env = ForexTradingEnv(
                 data=test_data,
+                sequence_length=args.sequence_length if hasattr(args, 'sequence_length') else 50,
                 initial_balance=args.initial_balance,
                 lot_size=args.lot_size,
                 max_positions=args.max_positions
@@ -434,6 +460,7 @@ def main():
         results = evaluate_model(
             agent=agent,
             test_data=test_data,
+            sequence_length=args.sequence_length,
             initial_balance=args.initial_balance,
             lot_size=args.lot_size,
             max_positions=args.max_positions
@@ -448,7 +475,7 @@ def main():
         onnx_path = export_to_onnx(
             model_path=model_path,
             output_path=args.onnx_output,
-            input_shape=(19,),
+            input_shape=(362,),  # 50 candles * 7 features + 6 time + 6 portfolio
             create_mql5_example=not args.no_mql5_example
         )
         

@@ -24,7 +24,7 @@ warnings.filterwarnings('ignore')
 def export_ppo_to_onnx(
     model_path: str,
     output_path: str,
-    input_shape: Tuple[int, ...] = (19,),
+    input_shape: Tuple[int, ...] = (362,),  # Updated for candlestick sequence: 50*7 + 6 + 6
     input_name: str = "observations",
     output_name: str = "actions",
     opset_version: int = 11,
@@ -36,7 +36,7 @@ def export_ppo_to_onnx(
     Args:
         model_path: Path to the saved SB3 model
         output_path: Path to save the ONNX model
-        input_shape: Shape of input observations (default: (19,) for our state space)
+        input_shape: Shape of input observations (default: (362,) for candlestick sequence)
         input_name: Name of input layer (must match MQL5 expectations)
         output_name: Name of output layer (must match MQL5 expectations)
         opset_version: ONNX opset version (default: 11 for compatibility)
@@ -150,7 +150,7 @@ def export_ppo_to_onnx(
 
 def verify_onnx_model(
     model_path: str,
-    input_shape: Tuple[int, ...] = (19,),
+    input_shape: Tuple[int, ...] = (362,),  # Updated for candlestick sequence
     verbose: bool = True
 ) -> bool:
     """
@@ -266,11 +266,12 @@ long ONNX_HANDLE = INVALID_HANDLE;
 double LOT_SIZE = 0.01;
 int MAX_POSITIONS = 5;
 
-// State Space: 19 dimensions
-// [OHLC(4), RSI, ATR, BB_Upper, BB_Middle, BB_Lower, BB_Width, 
-//  Session_Asia, Session_Europe, Session_US,
-//  Balance, Equity, Floating_PL, Num_Positions, Avg_Entry, Drawdown_Pct]
-int STATE_SIZE = 19;
+// State Space: 362 dimensions
+// [Sequence of 50 candles × 7 features (350), 
+//  Time features (6), Portfolio state (6)]
+// Each candle: Body Size, Upper Wick, Lower Wick, Price Change, 
+//              Price Change %, Candle Direction, Body to Range
+int STATE_SIZE = 362;
 
 // Action Space: 6 discrete actions
 // 0: Hold, 1: Initial Buy, 2: Initial Sell, 
@@ -366,21 +367,23 @@ void PrepareState()
     CopyLow(_Symbol, PERIOD_M15, 0, 1, low);
     CopyClose(_Symbol, PERIOD_M15, 0, 1, close);
     
-    // OHLC (normalized or raw - adjust based on your preprocessing)
-    state_buffer[0] = open[0];
-    state_buffer[1] = high[0];
-    state_buffer[2] = low[0];
-    state_buffer[3] = close[0];
+    // TODO: Build sequence of last 50 candles
+    // For each candle, calculate:
+    // - Body Size = abs(close - open)
+    // - Upper Wick = high - max(open, close)
+    // - Lower Wick = min(open, close) - low
+    // - Price Change = close - previous_close
+    // - Price Change % = price_change / previous_close
+    // - Candle Direction = (close > open) ? 1 : ((close < open) ? -1 : 0)
+    // - Body to Range = body_size / (high - low)
+    // 
+    // Then add time features (hour_sin, hour_cos, day_of_week, sessions)
+    // And portfolio state (balance, equity, floating_pnl, positions, avg_entry, drawdown)
     
-    // TODO: Calculate and add technical indicators
-    // RSI, ATR, Bollinger Bands, Session indicators
-    // state_buffer[4] = CalculateRSI();
-    // state_buffer[5] = CalculateATR();
-    // ... etc
-    
-    // TODO: Add portfolio state
-    // Balance, Equity, Floating P/L, Positions, Avg Entry, Drawdown
-    // state_buffer[13] = AccountInfoDouble(ACCOUNT_BALANCE);
+    // Example for current candle (you need to do this for last 50 candles):
+    // double body_size = MathAbs(close[0] - open[0]);
+    // double upper_wick = high[0] - MathMax(open[0], close[0]);
+    // double lower_wick = MathMin(open[0], close[0]) - low[0];
     // ... etc
     
     // Convert to float array for ONNX
@@ -511,8 +514,8 @@ if __name__ == "__main__":
         "--input_shape",
         type=int,
         nargs='+',
-        default=[19],
-        help="Input shape (default: [19])"
+        default=[362],
+        help="Input shape (default: [362] for 50-candle sequence)"
     )
     parser.add_argument(
         "--input_name",
