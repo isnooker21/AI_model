@@ -15,133 +15,16 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 import warnings
 
-# Try to import MetaTrader5, fallback to mock if not available
+# Import MetaTrader5 - required for data fetching
 try:
     import MetaTrader5 as mt5
-    MT5_AVAILABLE = True
 except ImportError:
-    MT5_AVAILABLE = False
-    print("Warning: MetaTrader5 not available. Using mock data provider for development.")
-
-
-class MockMT5:
-    """
-    Mock MetaTrader5 implementation for Mac development.
-    Generates realistic synthetic XAUUSD M15 data.
-    """
-    
-    @staticmethod
-    def initialize(path: Optional[str] = None) -> bool:
-        """Mock initialization - always returns True."""
-        return True
-    
-    @staticmethod
-    def shutdown() -> None:
-        """Mock shutdown - no-op."""
-        pass
-    
-    @staticmethod
-    def copy_rates_range(
-        symbol: str,
-        timeframe: int,
-        date_from: datetime,
-        date_to: datetime
-    ) -> Optional[np.ndarray]:
-        """
-        Generate synthetic OHLCV data for XAUUSDc.
-        
-        Args:
-            symbol: Trading symbol (e.g., 'XAUUSDc')
-            timeframe: MT5 timeframe constant
-            date_from: Start date
-            date_to: End date
-            
-        Returns:
-            numpy array with OHLCV data
-        """
-        # Calculate number of bars based on timeframe
-        time_diff = date_to - date_from
-        total_minutes = int(time_diff.total_seconds() / 60)
-        
-        # Determine bar interval from timeframe
-        if timeframe == 5:
-            bar_interval = 5  # M5
-        elif timeframe == 15:
-            bar_interval = 15  # M15
-        elif timeframe == 60:
-            bar_interval = 60  # H1
-        else:
-            bar_interval = 5  # Default to M5
-        
-        num_bars = total_minutes // bar_interval
-        
-        if num_bars <= 0:
-            return None
-        
-        # Generate realistic gold price data (starting around 2000)
-        np.random.seed(42)  # For reproducibility
-        base_price = 2000.0
-        prices = []
-        current_price = base_price
-        
-        for i in range(num_bars):
-            # Random walk with slight upward bias
-            # Adjust volatility based on timeframe (M5 has less volatility per bar)
-            volatility = 0.2 if bar_interval == 5 else 0.5
-            change = np.random.normal(0, volatility)
-            current_price += change
-            
-            # Generate OHLC
-            wick_size = abs(np.random.normal(0, 0.15))
-            high = current_price + wick_size
-            low = current_price - wick_size
-            open_price = current_price + np.random.normal(0, 0.1)
-            close_price = current_price
-            
-            # Ensure OHLC consistency
-            high = max(high, open_price, close_price)
-            low = min(low, open_price, close_price)
-            
-            prices.append([
-                int(date_from.timestamp()) + i * bar_interval * 60,  # time
-                open_price,   # open
-                high,        # high
-                low,         # low
-                close_price, # close
-                1000,        # tick_volume (mock)
-                0,           # spread
-                0            # real_volume
-            ])
-        
-        # Return structured array with named columns (compatible with MT5 format)
-        dtype = [
-            ('time', np.int64),
-            ('open', np.float64),
-            ('high', np.float64),
-            ('low', np.float64),
-            ('close', np.float64),
-            ('tick_volume', np.int64),
-            ('spread', np.int32),
-            ('real_volume', np.int64)
-        ]
-        
-        return np.array([tuple(p) for p in prices], dtype=dtype)
-    
-    @staticmethod
-    def symbol_info(symbol: str):
-        """Mock symbol info."""
-        class SymbolInfo:
-            point = 0.01
-            digits = 2
-            contract_size = 100.0
-            trade_mode = 4  # TRADE_MODE_FULL
-        
-        return SymbolInfo()
-
-
-# Use mock if MT5 is not available
-if not MT5_AVAILABLE:
-    mt5 = MockMT5()
+    raise ImportError(
+        "MetaTrader5 library is required but not installed.\n"
+        "Please install it with: pip install MetaTrader5\n"
+        "Note: MetaTrader5 is only available on Windows.\n"
+        "For development on Mac/Linux, you need to run this on Windows VPS."
+    )
 
 
 def calculate_candlestick_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -227,7 +110,7 @@ def fetch_historical_data(
     lookback_days: int = 730  # 2 years
 ) -> pd.DataFrame:
     """
-    Fetch historical data from MetaTrader5 or generate mock data.
+    Fetch historical data from MetaTrader5.
     Returns only raw candlestick data with calculated features.
     
     Args:
@@ -242,10 +125,13 @@ def fetch_historical_data(
     """
     # Initialize MT5 connection
     if not mt5.initialize():
-        if MT5_AVAILABLE:
-            raise ConnectionError("Failed to initialize MetaTrader5")
-        else:
-            print("Using mock data provider for development.")
+        raise ConnectionError(
+            "Failed to initialize MetaTrader5.\n"
+            "Please ensure:\n"
+            "1. MetaTrader5 is installed and running\n"
+            "2. You are logged into your trading account\n"
+            "3. The symbol is available in Market Watch"
+        )
     
     try:
         # Set default dates if not provided
@@ -256,45 +142,40 @@ def fetch_historical_data(
         
         # Convert timeframe to MT5 constant
         if timeframe == 5:
-            mt5_timeframe = mt5.TIMEFRAME_M5 if MT5_AVAILABLE else 5
+            mt5_timeframe = mt5.TIMEFRAME_M5
         elif timeframe == 15:
-            mt5_timeframe = mt5.TIMEFRAME_M15 if MT5_AVAILABLE else 15
+            mt5_timeframe = mt5.TIMEFRAME_M15
         elif timeframe == 60:
-            mt5_timeframe = mt5.TIMEFRAME_H1 if MT5_AVAILABLE else 60
+            mt5_timeframe = mt5.TIMEFRAME_H1
         else:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         
         # Try to fetch data from MT5
-        rates = None
-        if MT5_AVAILABLE:
-            # Try primary symbol first
-            rates = mt5.copy_rates_range(symbol, mt5_timeframe, date_from, date_to)
-            
-            # If failed, try alternative symbols (common variations)
-            if rates is None or len(rates) == 0:
-                alternative_symbols = ['XAUUSD', 'GOLD', 'XAUUSD.c', 'XAUUSD#']
-                for alt_symbol in alternative_symbols:
-                    if alt_symbol != symbol:
-                        print(f"Trying alternative symbol: {alt_symbol}")
-                        rates = mt5.copy_rates_range(alt_symbol, mt5_timeframe, date_from, date_to)
-                        if rates is not None and len(rates) > 0:
-                            print(f"Successfully fetched data using symbol: {alt_symbol}")
-                            symbol = alt_symbol  # Update symbol for consistency
-                            break
-        else:
-            # Use mock data provider
-            print(f"Using mock data provider for {symbol}")
-            rates = mt5.copy_rates_range(symbol, mt5_timeframe, date_from, date_to)
+        # Try primary symbol first
+        rates = mt5.copy_rates_range(symbol, mt5_timeframe, date_from, date_to)
         
-        # If still no data, use mock as fallback
+        # If failed, try alternative symbols (common variations)
         if rates is None or len(rates) == 0:
-            if MT5_AVAILABLE:
-                print(f"Warning: No data retrieved from MT5 for {symbol}")
-                print("Falling back to mock data provider...")
-            rates = mt5.copy_rates_range(symbol, mt5_timeframe, date_from, date_to)
-            
-            if rates is None or len(rates) == 0:
-                raise ValueError(f"No data retrieved for {symbol} (tried MT5 and mock)")
+            alternative_symbols = ['XAUUSD', 'GOLD', 'XAUUSD.c', 'XAUUSD#']
+            for alt_symbol in alternative_symbols:
+                if alt_symbol != symbol:
+                    print(f"Trying alternative symbol: {alt_symbol}")
+                    rates = mt5.copy_rates_range(alt_symbol, mt5_timeframe, date_from, date_to)
+                    if rates is not None and len(rates) > 0:
+                        print(f"Successfully fetched data using symbol: {alt_symbol}")
+                        symbol = alt_symbol  # Update symbol for consistency
+                        break
+        
+        # If still no data, raise error with helpful message
+        if rates is None or len(rates) == 0:
+            error_msg = f"No data retrieved for {symbol}\n\n"
+            error_msg += "Possible solutions:\n"
+            error_msg += "1. Check if the symbol name is correct in your MT5 terminal\n"
+            error_msg += "2. Common symbol names: XAUUSD, XAUUSDc, GOLD, XAUUSD.c\n"
+            error_msg += "3. Make sure the symbol is available in Market Watch\n"
+            error_msg += "4. Try using --symbol argument with the correct symbol name\n"
+            error_msg += "5. Ensure you have historical data for the requested date range"
+            raise ValueError(error_msg)
         
         # Convert to DataFrame
         df = pd.DataFrame(rates)
@@ -321,7 +202,8 @@ def fetch_historical_data(
         return df
         
     except Exception as e:
-        raise RuntimeError(f"Error fetching data: {str(e)}")
+        error_msg = str(e)
+        raise RuntimeError(f"Error fetching data: {error_msg}")
     
     finally:
         mt5.shutdown()
