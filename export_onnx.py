@@ -10,8 +10,6 @@ Author: AI Trading System
 import os
 import numpy as np
 import torch
-import onnx
-import onnxruntime as ort
 from stable_baselines3 import PPO
 from stable_baselines3.common.policies import ActorCriticPolicy
 from typing import Optional, Tuple
@@ -19,6 +17,22 @@ import warnings
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
+
+# Try to import ONNX libraries (optional - only needed for export)
+try:
+    import onnx
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except ImportError as e:
+    ONNX_AVAILABLE = False
+    print(f"Warning: ONNX libraries not available: {e}")
+    print("ONNX export functionality will be disabled.")
+    print("To enable: pip install onnx onnxruntime")
+except Exception as e:
+    ONNX_AVAILABLE = False
+    print(f"Warning: ONNX libraries failed to load: {e}")
+    print("This may be due to missing DLL dependencies or Python version incompatibility.")
+    print("ONNX export functionality will be disabled.")
 
 
 def export_ppo_to_onnx(
@@ -45,6 +59,13 @@ def export_ppo_to_onnx(
     Returns:
         Path to the saved ONNX model
     """
+    if not ONNX_AVAILABLE:
+        raise RuntimeError(
+            "ONNX libraries are not available. "
+            "Please install them with: pip install onnx onnxruntime\n"
+            "Or if you encounter DLL errors, try: pip install onnxruntime"
+        )
+    
     if verbose:
         print(f"Loading model from {model_path}...")
     
@@ -164,6 +185,11 @@ def verify_onnx_model(
     Returns:
         True if model is valid, False otherwise
     """
+    if not ONNX_AVAILABLE:
+        if verbose:
+            print("ONNX libraries not available. Cannot verify model.")
+        return False
+    
     try:
         # Load and check the ONNX model
         onnx_model = onnx.load(model_path)
@@ -226,6 +252,9 @@ def get_model_input_output_names(model_path: str) -> Tuple[str, str]:
     Returns:
         Tuple of (input_name, output_name)
     """
+    if not ONNX_AVAILABLE:
+        raise RuntimeError("ONNX libraries are not available.")
+    
     onnx_model = onnx.load(model_path)
     
     input_name = onnx_model.graph.input[0].name

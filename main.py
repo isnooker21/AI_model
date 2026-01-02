@@ -20,7 +20,22 @@ from data_provider import (
 )
 from trading_env import ForexTradingEnv
 from agent import TradingAgent, split_data_for_training
-from export_onnx import export_ppo_to_onnx, verify_onnx_model
+
+# Import ONNX functions (optional - only needed for export)
+try:
+    from export_onnx import export_ppo_to_onnx, verify_onnx_model
+    ONNX_AVAILABLE = True
+except ImportError as e:
+    ONNX_AVAILABLE = False
+    print(f"Warning: ONNX export not available: {e}")
+    print("Export functionality will be disabled. Install with: pip install onnx onnxruntime")
+    
+    # Create dummy functions to prevent errors
+    def export_ppo_to_onnx(*args, **kwargs):
+        raise RuntimeError("ONNX export not available. Please install: pip install onnx onnxruntime")
+    
+    def verify_onnx_model(*args, **kwargs):
+        return False
 
 
 def fetch_and_prepare_data(
@@ -467,19 +482,34 @@ def main():
         )
     
     if args.mode in ["export", "full"]:
-        if args.mode == "export":
-            model_path = args.model_path
+        if not ONNX_AVAILABLE:
+            print("\n" + "="*60)
+            print("WARNING: ONNX export is not available")
+            print("="*60)
+            print("To enable ONNX export, please install:")
+            print("  pip install onnx onnxruntime")
+            print("\nIf you encounter DLL errors, try:")
+            print("  pip uninstall onnx onnxruntime")
+            print("  pip install onnxruntime")
+            print("="*60)
         else:
-            model_path = os.path.join(args.model_dir, "final_model.zip")
-        
-        onnx_path = export_to_onnx(
-            model_path=model_path,
-            output_path=args.onnx_output,
-            input_shape=(362,),  # 50 candles * 7 features + 6 time + 6 portfolio
-            create_mql5_example=not args.no_mql5_example
-        )
-        
-        print(f"\n✓ ONNX model ready for MT5 integration: {onnx_path}")
+            if args.mode == "export":
+                model_path = args.model_path
+            else:
+                model_path = os.path.join(args.model_dir, "final_model.zip")
+            
+            try:
+                onnx_path = export_to_onnx(
+                    model_path=model_path,
+                    output_path=args.onnx_output,
+                    input_shape=(362,),  # 50 candles * 7 features + 6 time + 6 portfolio
+                    create_mql5_example=not args.no_mql5_example
+                )
+                
+                print(f"\n✓ ONNX model ready for MT5 integration: {onnx_path}")
+            except Exception as e:
+                print(f"\n✗ ONNX export failed: {e}")
+                print("You can still use the model for training and evaluation.")
     
     print("\n" + "="*60)
     print("PROCESS COMPLETED SUCCESSFULLY")
