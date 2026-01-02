@@ -272,17 +272,23 @@ class SaveOnBestRewardCallback(BaseCallback):
     
     def _on_step(self) -> bool:
         if self.n_calls % self.check_freq == 0:
-            if len(self.model.episode_reward_buffer) > 0:
-                mean_reward = np.mean(self.model.episode_reward_buffer)
+            # Use ep_info_buffer instead of episode_reward_buffer
+            # ep_info_buffer contains episode information dictionaries with 'r' (reward) key
+            if hasattr(self.model, 'ep_info_buffer') and len(self.model.ep_info_buffer) > 0:
+                # Extract rewards from episode info
+                rewards = [ep_info.get('r', 0) for ep_info in self.model.ep_info_buffer if 'r' in ep_info]
                 
-                if mean_reward > self.best_mean_reward:
-                    self.best_mean_reward = mean_reward
+                if len(rewards) > 0:
+                    mean_reward = np.mean(rewards)
                     
-                    if self.verbose > 0:
-                        print(f"\nNew best mean reward: {mean_reward:.2f}")
-                        print(f"Saving model to {self.save_path}")
-                    
-                    self.model.save(self.save_path)
+                    if mean_reward > self.best_mean_reward:
+                        self.best_mean_reward = mean_reward
+                        
+                        if self.verbose > 0:
+                            print(f"\nNew best mean reward: {mean_reward:.2f}")
+                            print(f"Saving model to {self.save_path}")
+                        
+                        self.model.save(self.save_path)
         
         return True
 
