@@ -29,11 +29,8 @@ if errorlevel 1 (
     echo.
     echo ERROR: Some packages failed to install
     echo.
-    echo If ta-lib installation fails, try:
-    echo   pip install TA-Lib-binary
-    echo.
-    echo Or download from:
-    echo   https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib
+    echo Note: ta-lib is NOT required for this candlestick-only system
+    echo All features are calculated from raw OHLC data
     echo.
     pause
     exit /b 1

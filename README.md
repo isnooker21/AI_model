@@ -68,9 +68,7 @@ chmod +x install.sh
 pip install -r requirements.txt
 ```
 
-**Note**: If `ta-lib` installation fails, you can:
-- Install TA-Lib binary: `pip install TA-Lib-binary`
-- Or download from: https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib
+**Important**: This system uses **candlestick-only** approach and does **NOT require ta-lib**. All features are calculated from raw OHLC data.
 
 **Troubleshooting ModuleNotFoundError:**
 If you encounter `ModuleNotFoundError: No module named 'onnx'` or other missing modules:

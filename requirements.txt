@@ -5,10 +5,8 @@ gymnasium>=0.29.0
 stable-baselines3>=2.1.0
 torch>=2.0.0
 
-# Technical Analysis
-ta-lib>=0.4.28
-# Note: If ta-lib installation fails, use: pip install TA-Lib-binary
-# Or install from: https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib
+# Note: ta-lib is NOT required for candlestick-only approach
+# We calculate all features manually from raw OHLC data
 
 # MetaTrader5 (for Windows VPS)
 MetaTrader5>=5.0.45

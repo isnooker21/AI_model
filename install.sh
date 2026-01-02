@@ -28,8 +28,8 @@ if [ $? -ne 0 ]; then
     echo ""
     echo "ERROR: Some packages failed to install"
     echo ""
-    echo "If ta-lib installation fails, try:"
-    echo "  pip3 install TA-Lib-binary"
+    echo "Note: ta-lib is NOT required for this candlestick-only system"
+    echo "All features are calculated from raw OHLC data"
     echo ""
     exit 1
 fi
