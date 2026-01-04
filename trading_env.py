@@ -309,7 +309,7 @@ class ForexTradingEnv(gym.Env):
             self.balance / self.initial_balance,  # Normalized balance
             current_equity / self.initial_balance,  # Normalized equity
             floating_pnl / self.initial_balance,  # Normalized floating P/L
-            len(self.positions) / self.max_positions,  # Normalized position count
+            min(len(self.positions) / 100.0, 1.0),  # Normalized position count (cap at 100 for normalization)
             (avg_entry - current_row['close']) / current_row['close'],  # Normalized entry price difference
             drawdown_pct  # Drawdown percentage
         ], dtype=np.float32)
@@ -658,9 +658,7 @@ class ForexTradingEnv(gym.Env):
         
         # Note: max_drawdown_pct is set to 0.95 (95%) - AI can fight until almost zero
         
-        # Penalty for excessive positions
-        if len(self.positions) >= self.max_positions:
-            reward -= 0.1
+        # No penalty for excessive positions - AI can open unlimited positions
         
         # Small reward for closing positions
         if trade_result['action'] == 5 and trade_result['executed']:
