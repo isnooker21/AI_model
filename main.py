@@ -142,9 +142,9 @@ def train_model(
         initial_balance=initial_balance,
         lot_size=lot_size,
         max_positions=max_positions,
-        max_drawdown_pct=0.20,
-        recovery_threshold_pct=0.005,  # 0.5% aggressive recovery
-        min_grid_distance=2.0  # 2.0 USD minimum grid distance
+        max_drawdown_pct=0.95,  # 95% max drawdown - survival training
+        recovery_threshold_pct=0.0,  # Removed - no threshold
+        min_grid_distance=0.0  # Removed - no minimum distance
     )
     
     print("Creating validation environment...")
@@ -154,9 +154,9 @@ def train_model(
         initial_balance=initial_balance,
         lot_size=lot_size,
         max_positions=max_positions,
-        max_drawdown_pct=0.20,
-        recovery_threshold_pct=0.005,  # 0.5% aggressive recovery
-        min_grid_distance=2.0  # 2.0 USD minimum grid distance
+        max_drawdown_pct=0.95,  # 95% max drawdown - survival training
+        recovery_threshold_pct=0.0,  # Removed - no threshold
+        min_grid_distance=0.0  # Removed - no minimum distance
     )
     
     # Create agent
@@ -236,9 +236,9 @@ def evaluate_model(
         initial_balance=initial_balance,
         lot_size=lot_size,
         max_positions=max_positions,
-        max_drawdown_pct=0.20,
-        recovery_threshold_pct=0.005,  # 0.5% aggressive recovery
-        min_grid_distance=2.0  # 2.0 USD minimum grid distance
+        max_drawdown_pct=0.95,  # 95% max drawdown - survival training
+        recovery_threshold_pct=0.0,  # Removed - no threshold
+        min_grid_distance=0.0  # Removed - no minimum distance
     )
     
     # Evaluate
@@ -381,8 +381,8 @@ def main():
     parser.add_argument(
         "--max_positions",
         type=int,
-        default=5,
-        help="Maximum concurrent positions"
+        default=100,
+        help="Maximum concurrent positions (default: 100 for maximum freedom)"
     )
     parser.add_argument(
         "--sequence_length",
@@ -439,21 +439,26 @@ def main():
     os.makedirs(os.path.dirname(args.data_file) if os.path.dirname(args.data_file) else '.', exist_ok=True)
     
     print("="*60)
-    print("XAUUSD AUTONOMOUS TRADING SYSTEM (CANDLESTICK-ONLY)")
+    print("XAUUSDc AUTONOMOUS TRADING SYSTEM (CANDLESTICK-ONLY)")
     print("="*60)
     print(f"Mode: {args.mode}")
     print(f"Symbol: {args.symbol}")
+    print(f"Timeframe: M{args.timeframe}")
+    print(f"Lookback: {args.lookback_days} days ({args.lookback_days/365:.1f} years)")
     print(f"Architecture: {args.architecture.upper()}")
-    print(f"Sequence Length: {args.sequence_length} candles")
+    print(f"Sequence Length: {args.sequence_length} candles (last {args.sequence_length * args.timeframe / 60:.1f} hours)")
     print(f"Initial Balance: ${args.initial_balance:,.2f}")
     print(f"Lot Size: {args.lot_size}")
     print(f"Max Positions: {args.max_positions}")
+    print(f"Recovery Threshold: 0.5% (aggressive)")
+    print(f"Min Grid Distance: 2.0 USD")
     print("="*60)
     
     # Execute based on mode
     if args.mode in ["fetch", "full"]:
         data = fetch_and_prepare_data(
             symbol=args.symbol,
+            timeframe=args.timeframe,
             lookback_days=args.lookback_days,
             data_file=args.data_file,
             force_refresh=args.force_refresh

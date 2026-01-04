@@ -43,15 +43,15 @@ class ForexTradingEnv(gym.Env):
         sequence_length: int = 50,
         initial_balance: float = 10000.0,
         lot_size: float = 0.1,  # Increased for more visible impact
-        max_positions: int = 5,
-        max_drawdown_pct: float = 0.20,  # 20% max drawdown
-        recovery_threshold_pct: float = 0.005,  # 0.5% drawdown triggers recovery (aggressive)
+        max_positions: int = 100,  # Maximum freedom - allow aggressive scaling
+        max_drawdown_pct: float = 0.95,  # 95% max drawdown - survival training
+        recovery_threshold_pct: float = 0.0,  # Removed - no threshold
         commission_per_lot: float = 7.0,  # $7 per lot
         spread_pips: float = 0.5,  # 0.5 pips spread (low for training)
         time_penalty: float = -0.0005,  # Reduced time penalty
         reward_scale: float = 1.0,
         normalize_features: bool = True,
-        min_grid_distance: float = 2.0  # Minimum price distance (USD) for recovery trade
+        min_grid_distance: float = 0.0  # Removed - no minimum distance
     ):
         """
         Initialize the trading environment.
@@ -90,14 +90,14 @@ class ForexTradingEnv(gym.Env):
         self.pip_value = 0.01  # For XAUUSD, 1 pip = $0.01 per lot
         self.point_value = 0.01
         
-        # No-trade penalty (encourages active trading) - Increased to force trading
-        self.no_trade_penalty = -0.05
+        # No-trade penalty (encourages active trading) - Maximum penalty for laziness
+        self.no_trade_penalty = -0.1  # -0.1 per step when no positions
         
-        # Immediate action reward (encourages taking chances)
-        self.immediate_action_reward = 0.01
+        # Action bonus (reward for opening new positions)
+        self.action_bonus = 0.02  # +0.02 for opening any new position
         
-        # Reward for holding profitable positions
-        self.holding_profit_reward = 0.002  # Small reward per step when floating P/L > 0
+        # Active trade reward (reward for holding profitable positions)
+        self.active_trade_reward = 0.001  # +0.001 per step when floating P/L > 0
         
         # Required candlestick feature columns
         self.candle_features = [
@@ -372,14 +372,16 @@ class ForexTradingEnv(gym.Env):
     
     def _can_recovery_trade(self, action_type: str) -> bool:
         """
-        Check if recovery trade is allowed based on drawdown, position state, and minimum grid distance.
+        Check if recovery trade is allowed - ZERO BARRIERS, maximum freedom.
+        AI can scale-in whenever it wants.
         
         Args:
             action_type: 'buy' or 'sell'
             
         Returns:
-            True if recovery trade is allowed
+            True if recovery trade is allowed (almost always, unless max positions reached)
         """
+        # Must have at least one position of the same type
         if len(self.positions) == 0:
             return False
         
@@ -388,37 +390,12 @@ class ForexTradingEnv(gym.Env):
         if len(matching_positions) == 0:
             return False
         
-        # Check max positions
+        # Only restriction: max positions (but set to 100, so very permissive)
         if len(self.positions) >= self.max_positions:
             return False
         
-        # Get current price and average entry price
-        current_price = self.data.iloc[self.current_step]['close']
-        avg_entry = self._calculate_avg_entry_price(action_type)
-        
-        # Calculate price distance from average entry
-        price_distance = abs(current_price - avg_entry)
-        
-        # Check minimum grid distance (2.0 USD = 200 points)
-        # If price has moved enough, allow recovery even with small drawdown
-        grid_distance_met = price_distance >= self.min_grid_distance
-        
-        # Check drawdown threshold
-        current_equity = self.balance + self._calculate_floating_pnl()
-        drawdown_pct = (self.peak_equity - current_equity) / self.peak_equity if self.peak_equity > 0 else 0.0
-        
-        # Allow recovery if:
-        # 1. Drawdown threshold met (0.5%), OR
-        # 2. Minimum grid distance met (2.0 USD away from avg entry)
-        drawdown_threshold_met = drawdown_pct >= self.recovery_threshold_pct
-        
-        if not (drawdown_threshold_met or grid_distance_met):
-            return False  # Neither condition met
-        
-        # Check max drawdown (safety check)
-        if drawdown_pct >= self.max_drawdown_pct:
-            return False  # Too much drawdown, don't add more risk
-        
+        # NO OTHER RESTRICTIONS - AI can scale-in whenever it wants
+        # No drawdown threshold, no minimum distance, no safety checks
         return True
     
     def _detect_market_regime(self) -> str:
@@ -636,21 +613,21 @@ class ForexTradingEnv(gym.Env):
         """
         reward = 0.0
         
-        # Increased No-trade penalty: Strongly penalize when AI has zero positions
+        # Maximum No-trade penalty: Severely penalize when AI has zero positions
         if len(self.positions) == 0 and trade_result['action'] == 0:
-            reward += self.no_trade_penalty  # -0.05 per step when no positions
+            reward += self.no_trade_penalty  # -0.1 per step when no positions (lazy penalty)
         
         # Reduced time penalty for every step (less penalty for holding trades)
         reward += self.time_penalty
         
-        # Immediate Action Reward: Reward just for opening a position (encourages taking chances)
-        if trade_result['executed'] and trade_result['action'] in [1, 2]:
-            reward += self.immediate_action_reward  # +0.01 for opening Initial Buy/Sell
+        # Action Bonus: Reward for opening ANY new position (Initial Buy/Sell or Recovery)
+        if trade_result['executed'] and trade_result['action'] in [1, 2, 3, 4]:
+            reward += self.action_bonus  # +0.02 for opening any position
         
-        # Reward for holding profitable positions (teaches that holding winners is good)
+        # Active Trade Reward: Reward for holding profitable positions (teaches holding winners)
         floating_pnl = self._calculate_floating_pnl()
-        if floating_pnl > 0:
-            reward += self.holding_profit_reward  # +0.002 per step when floating P/L > 0
+        if floating_pnl > 0 and len(self.positions) > 0:
+            reward += self.active_trade_reward  # +0.001 per step when floating P/L > 0
         
         # Increased reward for realized profit (encourages profit realization and capital cycling)
         if trade_result.get('pnl', 0) > 0:
@@ -680,14 +657,16 @@ class ForexTradingEnv(gym.Env):
                     else:
                         reward -= 0.05
         
-        # Relaxed Drawdown Penalty: Only penalize if drawdown exceeds 10%
+        # Drawdown Penalty: Only penalize if drawdown exceeds 10% (relaxed for small fluctuations)
         current_equity = self.balance + floating_pnl
         drawdown_pct = (self.peak_equity - current_equity) / self.peak_equity if self.peak_equity > 0 else 0.0
         
-        # Only penalize if drawdown > 10% (relaxed for small fluctuations)
+        # Only penalize if drawdown > 10% (allows small fluctuations)
         if drawdown_pct > 0.10:  # 10% drawdown
             reward -= drawdown_pct * 5.0
         # No penalty for drawdown < 10% (allows small fluctuations)
+        
+        # Note: max_drawdown_pct is set to 0.95 (95%) - AI can fight until almost zero
         
         # Penalty for excessive positions
         if len(self.positions) >= self.max_positions:
@@ -723,17 +702,19 @@ class ForexTradingEnv(gym.Env):
         # Calculate reward
         reward = self._calculate_reward(trade_result)
         
-        # Check termination conditions
+        # Check termination conditions (survival training - fight until almost zero)
         current_equity = self.balance + self._calculate_floating_pnl()
         
-        if current_equity < self.initial_balance * 0.1:
+        # Only terminate if account is almost completely blown (5% remaining)
+        if current_equity < self.initial_balance * 0.05:
             terminated = True
-            reward -= 10.0
+            reward -= 10.0  # Large penalty for account blow-up
         
+        # Check max drawdown (95% - very permissive, let it fight)
         drawdown_pct = (self.peak_equity - current_equity) / self.peak_equity if self.peak_equity > 0 else 0.0
         if drawdown_pct >= self.max_drawdown_pct:
             terminated = True
-            reward -= 5.0
+            reward -= 5.0  # Penalty for exceeding max drawdown
         
         # Get new observation
         observation = self._get_observation()
