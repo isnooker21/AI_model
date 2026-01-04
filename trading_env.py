@@ -390,12 +390,8 @@ class ForexTradingEnv(gym.Env):
         if len(matching_positions) == 0:
             return False
         
-        # Only restriction: max positions (but set to 100, so very permissive)
-        if len(self.positions) >= self.max_positions:
-            return False
-        
-        # NO OTHER RESTRICTIONS - AI can scale-in whenever it wants
-        # No drawdown threshold, no minimum distance, no safety checks
+        # NO RESTRICTIONS - AI can scale-in unlimited times
+        # No max positions limit, no drawdown threshold, no minimum distance, no safety checks
         return True
     
     def _detect_market_regime(self) -> str:
@@ -449,10 +445,7 @@ class ForexTradingEnv(gym.Env):
             return trade_result
         
         elif action == 1:  # Initial Buy
-            if len(self.positions) >= self.max_positions:
-                trade_result['message'] = 'Max positions reached'
-                return trade_result
-            
+            # No max positions limit - AI can open unlimited positions
             commission = self.commission_per_lot * self.lot_size
             # Allow trade even with minimal balance (encourage trading)
             if self.balance < commission * 0.5:  # Only block if balance is very low
@@ -475,10 +468,7 @@ class ForexTradingEnv(gym.Env):
             self.total_trades += 1
         
         elif action == 2:  # Initial Sell
-            if len(self.positions) >= self.max_positions:
-                trade_result['message'] = 'Max positions reached'
-                return trade_result
-            
+            # No max positions limit - AI can open unlimited positions
             commission = self.commission_per_lot * self.lot_size
             # Allow trade even with minimal balance (encourage trading)
             if self.balance < commission * 0.5:  # Only block if balance is very low
