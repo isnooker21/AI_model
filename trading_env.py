@@ -47,7 +47,7 @@ class ForexTradingEnv(gym.Env):
         max_drawdown_pct: float = 0.20,  # 20% max drawdown
         recovery_threshold_pct: float = 0.005,  # 0.5% drawdown triggers recovery (aggressive)
         commission_per_lot: float = 7.0,  # $7 per lot
-        spread_pips: float = 2.0,  # 2 pips spread
+        spread_pips: float = 0.5,  # 0.5 pips spread (low for training)
         time_penalty: float = -0.0005,  # Reduced time penalty
         reward_scale: float = 1.0,
         normalize_features: bool = True,
@@ -90,8 +90,14 @@ class ForexTradingEnv(gym.Env):
         self.pip_value = 0.01  # For XAUUSD, 1 pip = $0.01 per lot
         self.point_value = 0.01
         
-        # No-trade penalty (encourages active trading)
-        self.no_trade_penalty = -0.01
+        # No-trade penalty (encourages active trading) - Increased to force trading
+        self.no_trade_penalty = -0.05
+        
+        # Immediate action reward (encourages taking chances)
+        self.immediate_action_reward = 0.01
+        
+        # Reward for holding profitable positions
+        self.holding_profit_reward = 0.002  # Small reward per step when floating P/L > 0
         
         # Required candlestick feature columns
         self.candle_features = [
@@ -471,7 +477,8 @@ class ForexTradingEnv(gym.Env):
                 return trade_result
             
             commission = self.commission_per_lot * self.lot_size
-            if self.balance < commission:
+            # Allow trade even with minimal balance (encourage trading)
+            if self.balance < commission * 0.5:  # Only block if balance is very low
                 trade_result['message'] = 'Insufficient balance for commission'
                 return trade_result
             
@@ -496,7 +503,8 @@ class ForexTradingEnv(gym.Env):
                 return trade_result
             
             commission = self.commission_per_lot * self.lot_size
-            if self.balance < commission:
+            # Allow trade even with minimal balance (encourage trading)
+            if self.balance < commission * 0.5:  # Only block if balance is very low
                 trade_result['message'] = 'Insufficient balance for commission'
                 return trade_result
             
@@ -618,7 +626,7 @@ class ForexTradingEnv(gym.Env):
     def _calculate_reward(self, trade_result: Dict) -> float:
         """
         Calculate reward based on trading action and portfolio state.
-        Aggressive reward function for high-frequency trading.
+        Aggressive reward function to force active trading.
         
         Args:
             trade_result: Result from trade execution
@@ -628,12 +636,21 @@ class ForexTradingEnv(gym.Env):
         """
         reward = 0.0
         
-        # No-trade penalty: Penalize when AI has zero positions (encourages active trading)
+        # Increased No-trade penalty: Strongly penalize when AI has zero positions
         if len(self.positions) == 0 and trade_result['action'] == 0:
-            reward += self.no_trade_penalty
+            reward += self.no_trade_penalty  # -0.05 per step when no positions
         
         # Reduced time penalty for every step (less penalty for holding trades)
         reward += self.time_penalty
+        
+        # Immediate Action Reward: Reward just for opening a position (encourages taking chances)
+        if trade_result['executed'] and trade_result['action'] in [1, 2]:
+            reward += self.immediate_action_reward  # +0.01 for opening Initial Buy/Sell
+        
+        # Reward for holding profitable positions (teaches that holding winners is good)
+        floating_pnl = self._calculate_floating_pnl()
+        if floating_pnl > 0:
+            reward += self.holding_profit_reward  # +0.002 per step when floating P/L > 0
         
         # Increased reward for realized profit (encourages profit realization and capital cycling)
         if trade_result.get('pnl', 0) > 0:
@@ -663,12 +680,14 @@ class ForexTradingEnv(gym.Env):
                     else:
                         reward -= 0.05
         
-        # Penalty for high drawdown
-        current_equity = self.balance + self._calculate_floating_pnl()
+        # Relaxed Drawdown Penalty: Only penalize if drawdown exceeds 10%
+        current_equity = self.balance + floating_pnl
         drawdown_pct = (self.peak_equity - current_equity) / self.peak_equity if self.peak_equity > 0 else 0.0
         
+        # Only penalize if drawdown > 10% (relaxed for small fluctuations)
         if drawdown_pct > 0.10:  # 10% drawdown
             reward -= drawdown_pct * 5.0
+        # No penalty for drawdown < 10% (allows small fluctuations)
         
         # Penalty for excessive positions
         if len(self.positions) >= self.max_positions:
