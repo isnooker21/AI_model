@@ -146,7 +146,9 @@ def train_model(
     log_dir: str = "logs",
     model_dir: str = "models",
     save_freq: int = 100000,  # Save every 100k steps (10% of total)
-    eval_freq: int = 200000  # Evaluate every 200k steps (20% of total)
+    eval_freq: int = 200000,  # Evaluate every 200k steps (20% of total)
+    learning_rate: float = 1e-4,  # Reduced learning rate (0.0001) to prevent loss explosion
+    continue_training: bool = True  # Auto-continue from checkpoint if available
 ) -> TradingAgent:
     """
     Train the trading agent.
