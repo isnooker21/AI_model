@@ -363,8 +363,8 @@ def main():
     parser.add_argument(
         "--train_timesteps",
         type=int,
-        default=100000,
-        help="Number of training timesteps"
+        default=1000000,
+        help="Number of training timesteps (default: 1,000,000)"
     )
     parser.add_argument(
         "--initial_balance",
