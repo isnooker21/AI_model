@@ -161,15 +161,15 @@ def train_model(
         min_grid_distance=0.0  # Removed - no minimum distance
     )
     
-    # Check for existing checkpoint
+    # Check for existing best model
     checkpoint_path = None
     if continue_training:
-        checkpoint_path = find_latest_checkpoint(model_dir)
+        checkpoint_path = find_latest_best_model(log_dir)
         if checkpoint_path:
-            print(f"\nFound existing checkpoint: {checkpoint_path}")
-            print("Will continue training from this checkpoint...")
+            print(f"\nFound best model: {checkpoint_path}")
+            print("Will continue training from this best model...")
         else:
-            print("\nNo existing checkpoint found. Starting fresh training...")
+            print("\nNo best model found. Starting fresh training...")
     
     # Create agent
     print(f"\nInitializing PPO agent with {architecture.upper()} architecture...")
