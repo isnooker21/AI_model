@@ -98,7 +98,7 @@ def train_model(
     train_timesteps: int = 100000,
     initial_balance: float = 10000.0,
     lot_size: float = 0.1,  # Increased for more visible impact
-    max_positions: int = 5,
+    max_positions: int = 100,  # Maximum freedom - allow aggressive scaling
     sequence_length: int = 50,
     architecture: str = "lstm",  # "lstm" or "transformer"
     log_dir: str = "logs",
@@ -207,7 +207,7 @@ def evaluate_model(
     sequence_length: int = 50,
     initial_balance: float = 10000.0,
     lot_size: float = 0.1,  # Increased for more visible impact
-    max_positions: int = 5,
+    max_positions: int = 100,  # Maximum freedom - allow aggressive scaling
     n_episodes: int = 10
 ) -> dict:
     """
