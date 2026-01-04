@@ -12,6 +12,8 @@ import argparse
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional
+from pathlib import Path
+import glob
 
 from data_provider import (
     fetch_historical_data,
@@ -159,6 +161,16 @@ def train_model(
         min_grid_distance=0.0  # Removed - no minimum distance
     )
     
+    # Check for existing checkpoint
+    checkpoint_path = None
+    if continue_training:
+        checkpoint_path = find_latest_checkpoint(model_dir)
+        if checkpoint_path:
+            print(f"\nFound existing checkpoint: {checkpoint_path}")
+            print("Will continue training from this checkpoint...")
+        else:
+            print("\nNo existing checkpoint found. Starting fresh training...")
+    
     # Create agent
     print(f"\nInitializing PPO agent with {architecture.upper()} architecture...")
     
@@ -170,27 +182,53 @@ def train_model(
         print("Note: TensorBoard not available. Training logs will not be saved.")
         print("To enable: pip install tensorboard")
     
+    # Create agent with reduced learning rate
     agent = TradingAgent(
         env=train_env,
         architecture=architecture,
-        learning_rate=3e-4,
+        learning_rate=learning_rate,  # Reduced to 1e-4 (0.0001)
         n_steps=2048,
         batch_size=64,
         n_epochs=10,
         gamma=0.99,
         tensorboard_log=tensorboard_log_path,
-        verbose=1
+        verbose=1,
+        model_path=checkpoint_path  # Load checkpoint if available
     )
     
-    # Train agent
-    print(f"\nStarting training for {train_timesteps} timesteps...")
-    agent.train(
-        total_timesteps=train_timesteps,
-        log_dir=log_dir,
-        save_freq=save_freq,
-        eval_env=val_env,
-        eval_freq=eval_freq
-    )
+    # If loading from checkpoint, update learning rate to prevent loss explosion
+    if checkpoint_path and agent.model:
+        print(f"\nUpdating learning rate to {learning_rate} to prevent loss explosion...")
+        agent.model.learning_rate = learning_rate
+        # Get current timesteps to calculate remaining steps
+        current_timesteps = agent.model.num_timesteps
+        remaining_timesteps = train_timesteps - current_timesteps
+        print(f"Current timesteps: {current_timesteps:,}")
+        print(f"Remaining timesteps: {remaining_timesteps:,}")
+        
+        if remaining_timesteps > 0:
+            print(f"\nContinuing training for {remaining_timesteps:,} more timesteps...")
+            agent.train(
+                total_timesteps=remaining_timesteps,
+                log_dir=log_dir,
+                save_freq=save_freq,
+                eval_env=val_env,
+                eval_freq=eval_freq,
+                reset_num_timesteps=False  # Continue from current timesteps
+            )
+        else:
+            print(f"\nModel already trained for {current_timesteps:,} timesteps (target: {train_timesteps:,})")
+            print("Training complete!")
+    else:
+        # Train agent from scratch
+        print(f"\nStarting training for {train_timesteps:,} timesteps...")
+        agent.train(
+            total_timesteps=train_timesteps,
+            log_dir=log_dir,
+            save_freq=save_freq,
+            eval_env=val_env,
+            eval_freq=eval_freq
+        )
     
     # Save final model
     os.makedirs(model_dir, exist_ok=True)

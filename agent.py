@@ -410,7 +410,8 @@ class TradingAgent:
         log_dir: str = "logs",
         save_freq: int = 10000,
         eval_env: Optional[ForexTradingEnv] = None,
-        eval_freq: int = 50000
+        eval_freq: int = 50000,
+        reset_num_timesteps: bool = True
     ) -> None:
         """
         Train the agent.
@@ -421,6 +422,7 @@ class TradingAgent:
             save_freq: Frequency of model saves (in steps)
             eval_env: Evaluation environment (optional)
             eval_freq: Frequency of evaluation (in steps)
+            reset_num_timesteps: Whether to reset timestep counter (False to continue from checkpoint)
         """
         os.makedirs(log_dir, exist_ok=True)
         
@@ -445,12 +447,19 @@ class TradingAgent:
             )
             callbacks.append(eval_callback)
         
-        print(f"Starting training for {total_timesteps} timesteps...")
+        current_timesteps = self.model.num_timesteps if hasattr(self.model, 'num_timesteps') else 0
+        if reset_num_timesteps:
+            print(f"Starting training for {total_timesteps:,} timesteps...")
+        else:
+            print(f"Continuing training for {total_timesteps:,} more timesteps...")
+            print(f"Current timesteps: {current_timesteps:,}")
+        
         print(f"Architecture: {self.architecture.upper()}")
         self.model.learn(
             total_timesteps=total_timesteps,
             callback=callbacks,
-            progress_bar=True
+            progress_bar=True,
+            reset_num_timesteps=reset_num_timesteps
         )
         
         final_model_path = os.path.join(log_dir, 'final_model')
