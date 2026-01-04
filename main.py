@@ -95,6 +95,46 @@ def fetch_and_prepare_data(
             raise
 
 
+def find_latest_best_model(log_dir: str) -> Optional[str]:
+    """
+    Find the latest best model saved by SaveOnBestRewardCallback or EvalCallback.
+    Prioritizes best_eval_model (from evaluation) over best_model (from training reward).
+    
+    Args:
+        log_dir: Directory containing log files and saved models
+        
+    Returns:
+        Path to latest best model or None if not found
+    """
+    if not os.path.exists(log_dir):
+        return None
+    
+    # Check for best_eval_model first (from EvalCallback - more reliable)
+    best_eval_model = os.path.join(log_dir, "best_eval_model.zip")
+    if os.path.exists(best_eval_model):
+        print(f"Found best evaluation model: {best_eval_model}")
+        return best_eval_model
+    
+    # Check for best_model (from SaveOnBestRewardCallback)
+    best_model = os.path.join(log_dir, "best_model.zip")
+    if os.path.exists(best_model):
+        print(f"Found best reward model: {best_model}")
+        return best_model
+    
+    # Fallback: look for any best_model files in subdirectories
+    best_models = glob.glob(os.path.join(log_dir, "**", "best_model.zip"), recursive=True)
+    best_eval_models = glob.glob(os.path.join(log_dir, "**", "best_eval_model.zip"), recursive=True)
+    
+    all_best_models = best_eval_models + best_models
+    if all_best_models:
+        # Sort by modification time and return latest
+        latest = max(all_best_models, key=os.path.getmtime)
+        print(f"Found best model: {latest}")
+        return latest
+    
+    return None
+
+
 def train_model(
     data: pd.DataFrame,
     train_timesteps: int = 1000000,  # 1 million timesteps for extensive training
