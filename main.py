@@ -95,7 +95,7 @@ def fetch_and_prepare_data(
 
 def train_model(
     data: pd.DataFrame,
-    train_timesteps: int = 100000,
+    train_timesteps: int = 1000000,  # 1 million timesteps for extensive training
     initial_balance: float = 10000.0,
     lot_size: float = 0.1,  # Increased for more visible impact
     max_positions: int = 100,  # Maximum freedom - allow aggressive scaling
@@ -103,8 +103,8 @@ def train_model(
     architecture: str = "lstm",  # "lstm" or "transformer"
     log_dir: str = "logs",
     model_dir: str = "models",
-    save_freq: int = 10000,
-    eval_freq: int = 50000
+    save_freq: int = 100000,  # Save every 100k steps (10% of total)
+    eval_freq: int = 200000  # Evaluate every 200k steps (20% of total)
 ) -> TradingAgent:
     """
     Train the trading agent.
