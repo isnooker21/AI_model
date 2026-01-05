@@ -152,14 +152,14 @@ def test_model(
         # Print progress every 1000 steps
         if step_count % 1000 == 0:
             # Get info from environment directly
-            env_info = test_env.get_info()
+            env_info = test_env._get_info()
             current_equity = env_info.get('equity', initial_balance)
             print(f"Step {step_count:,}: Equity=${current_equity:,.2f}, Reward={total_reward:.2f}")
     
     print("-" * 60)
     
     # Get final state from environment
-    final_info = test_env.get_info()
+    final_info = test_env._get_info()
     
     # Extract results
     results = {
