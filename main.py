@@ -237,27 +237,33 @@ def train_model(
     tensorboard_log_path = None
     if TENSORBOARD_AVAILABLE:
         tensorboard_log_path = os.path.join(log_dir, "tensorboard")
+    else:
+        print("Note: TensorBoard not available. Training logs will not be saved.")
     
-    # Wrap environment for PPO
-    from stable_baselines3.common.vec_env import DummyVecEnv
-    from stable_baselines3.common.monitor import Monitor
-    vec_env = DummyVecEnv([lambda: Monitor(train_env)])
+    # Create agent (will load checkpoint if model_path is provided)
+    print(f"\nInitializing PPO agent with {architecture.upper()} architecture...")
     
-    # Load checkpoint or create new model
-    if checkpoint_path and os.path.exists(checkpoint_path):
-        print(f"\nLoading model from checkpoint: {checkpoint_path}")
-        print(f"Initializing PPO agent with {architecture.upper()} architecture...")
-        
-        # Load model directly with PPO.load (crash-proof)
-        from stable_baselines3 import PPO
-        model = PPO.load(checkpoint_path, env=vec_env, verbose=0)  # verbose=0 to minimize output
-        
+    agent = TradingAgent(
+        env=train_env,
+        architecture=architecture,
+        learning_rate=learning_rate,
+        n_steps=2048,
+        batch_size=64,
+        n_epochs=10,
+        gamma=0.99,
+        tensorboard_log=tensorboard_log_path,
+        verbose=0,  # Set verbose=0 to minimize terminal output and save memory
+        model_path=checkpoint_path if checkpoint_path else None  # Load checkpoint if available (uses PPO.load internally)
+    )
+    
+    # If loading from checkpoint, update learning rate and continue training
+    if checkpoint_path and agent.model:
         # Update learning rate to prevent loss explosion
         print(f"Updating learning rate to {learning_rate} to prevent loss explosion...")
-        model.learning_rate = learning_rate
+        agent.model.learning_rate = learning_rate
         
         # Get current timesteps to calculate remaining steps
-        current_timesteps = model.num_timesteps
+        current_timesteps = agent.model.num_timesteps
         remaining_timesteps = train_timesteps - current_timesteps
         
         print(f"Current timesteps: {current_timesteps:,}")
@@ -266,11 +272,6 @@ def train_model(
         
         if remaining_timesteps > 0:
             print(f"\nContinuing training for {remaining_timesteps:,} more timesteps until {train_timesteps:,}...")
-            
-            # Create agent wrapper for training
-            agent = TradingAgent(env=train_env, architecture=architecture, verbose=0)
-            agent.model = model  # Use loaded model
-            
             agent.train(
                 total_timesteps=remaining_timesteps,
                 log_dir=log_dir,
@@ -282,25 +283,7 @@ def train_model(
         else:
             print(f"\nModel already trained for {current_timesteps:,} timesteps (target: {train_timesteps:,})")
             print("Training goal already reached!")
-            
-            # Create agent wrapper
-            agent = TradingAgent(env=train_env, architecture=architecture, verbose=0)
-            agent.model = model
     else:
-        # Create new agent from scratch
-        print(f"\nInitializing PPO agent with {architecture.upper()} architecture...")
-        agent = TradingAgent(
-            env=train_env,
-            architecture=architecture,
-            learning_rate=learning_rate,
-            n_steps=2048,
-            batch_size=64,
-            n_epochs=10,
-            gamma=0.99,
-            tensorboard_log=tensorboard_log_path,
-            verbose=0  # Set verbose=0 to minimize terminal output and save memory
-        )
-        
         # Train agent from scratch
         print(f"\nStarting training for {train_timesteps:,} timesteps...")
         agent.train(
