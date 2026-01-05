@@ -8,8 +8,9 @@ torch>=2.0.0
 # Note: ta-lib is NOT required for candlestick-only approach
 # We calculate all features manually from raw OHLC data
 
-# MetaTrader5 (for Windows VPS)
-MetaTrader5>=5.0.45
+# MetaTrader5 (for Windows VPS only - not available on Mac/Linux)
+# MetaTrader5>=5.0.45
+# Install manually on Windows: pip install MetaTrader5
 
 # ONNX Export
 onnx>=1.14.0
