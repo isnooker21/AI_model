@@ -266,19 +266,19 @@ def main():
     parser.add_argument(
         "--deterministic",
         action="store_true",
-        default=True,
-        help="Use deterministic predictions (default: True)"
+        default=False,
+        help="Use deterministic predictions (default: False for exploration)"
     )
     parser.add_argument(
         "--stochastic",
         action="store_true",
-        help="Use stochastic predictions (overrides --deterministic)"
+        help="Use stochastic predictions (default behavior, same as not specifying --deterministic)"
     )
     
     args = parser.parse_args()
     
-    # Determine deterministic mode
-    deterministic = not args.stochastic if args.stochastic else args.deterministic
+    # Determine deterministic mode (default is False for exploration)
+    deterministic = args.deterministic
     
     try:
         # Run test
