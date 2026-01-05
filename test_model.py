@@ -137,11 +137,14 @@ def test_model(
     
     total_reward = 0.0
     step_count = 0
+    max_steps = len(data) - test_env.sequence_length  # Maximum possible steps
     done = [False]
     
-    while not done[0]:
-        # Predict action (deterministic mode)
-        action, _ = model.predict(obs, deterministic=deterministic)
+    print(f"Running through {max_steps:,} steps...")
+    
+    while not done[0] and step_count < max_steps:
+        # Predict action (non-deterministic mode to see AI explore strategy)
+        action, _ = model.predict(obs, deterministic=False)  # Changed to False for exploration
         
         # Execute action
         obs, reward, done, info = vec_env.step(action)
@@ -154,7 +157,15 @@ def test_model(
             # Get info from environment directly
             env_info = test_env._get_info()
             current_equity = env_info.get('equity', initial_balance)
-            print(f"Step {step_count:,}: Equity=${current_equity:,.2f}, Reward={total_reward:.2f}")
+            current_step = env_info.get('step', step_count)
+            print(f"Step {step_count:,}/{max_steps:,} (Env step: {current_step:,}): Equity=${current_equity:,.2f}, Reward={total_reward:.2f}")
+        
+        # Check if environment terminated early (not due to end of data)
+        if done[0] and step_count < max_steps:
+            env_info = test_env._get_info()
+            print(f"\nWarning: Environment terminated early at step {step_count:,}")
+            print(f"Reason: Current step={env_info.get('step', step_count)}, Equity=${env_info.get('equity', initial_balance):,.2f}")
+            print(f"Balance=${env_info.get('balance', initial_balance):,.2f}, Drawdown={env_info.get('drawdown_pct', 0)*100:.2f}%")
     
     print("-" * 60)
     
