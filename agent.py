@@ -400,7 +400,7 @@ class TradingAgent:
                 max_grad_norm=max_grad_norm,
                 policy_kwargs=policy_kwargs,
                 tensorboard_log=tensorboard_log,
-                verbose=verbose,
+                verbose=verbose,  # Can be set to 0 to minimize output
                 device='cpu'  # Use 'cuda' if GPU available
             )
     

@@ -95,42 +95,62 @@ def fetch_and_prepare_data(
             raise
 
 
-def find_latest_best_model(log_dir: str) -> Optional[str]:
+def find_latest_checkpoint(model_dir: str, log_dir: str) -> Optional[str]:
     """
-    Find the latest best model saved by SaveOnBestRewardCallback or EvalCallback.
-    Prioritizes best_eval_model (from evaluation) over best_model (from training reward).
+    Find the latest checkpoint for crash-proof training.
+    Priority order:
+    1. Checkpoints in ./models/ (e.g., ppo_gold_model_XXXXX_steps.zip, rl_model_XXXXX_steps.zip)
+    2. best_eval_model.zip in ./logs/best_eval_model/
+    3. best_model.zip in ./logs/
     
     Args:
+        model_dir: Directory containing model checkpoints
         log_dir: Directory containing log files and saved models
         
     Returns:
-        Path to latest best model or None if not found
+        Path to latest checkpoint or None if not found
     """
-    if not os.path.exists(log_dir):
-        return None
+    # 1. Check for checkpoints in models/ directory
+    if os.path.exists(model_dir):
+        # Look for PPO checkpoint files (pattern: *_XXXXX_steps.zip or *.zip)
+        checkpoint_patterns = [
+            os.path.join(model_dir, "*.zip"),
+            os.path.join(model_dir, "*_steps.zip"),
+            os.path.join(model_dir, "ppo_*.zip"),
+            os.path.join(model_dir, "rl_model_*.zip")
+        ]
+        
+        all_checkpoints = []
+        for pattern in checkpoint_patterns:
+            checkpoints = glob.glob(pattern)
+            all_checkpoints.extend(checkpoints)
+        
+        # Remove duplicates and filter out non-checkpoint files
+        all_checkpoints = list(set([c for c in all_checkpoints if c.endswith('.zip')]))
+        
+        if all_checkpoints:
+            # Sort by modification time and return latest
+            latest = max(all_checkpoints, key=os.path.getmtime)
+            print(f"Found checkpoint in models/: {latest}")
+            return latest
     
-    # Check for best_eval_model first (from EvalCallback - more reliable)
-    best_eval_model = os.path.join(log_dir, "best_eval_model.zip")
-    if os.path.exists(best_eval_model):
-        print(f"Found best evaluation model: {best_eval_model}")
-        return best_eval_model
+    # 2. Check for best_eval_model in logs/best_eval_model/
+    best_eval_model_path = os.path.join(log_dir, "best_eval_model.zip")
+    if os.path.exists(best_eval_model_path):
+        print(f"Found best evaluation model: {best_eval_model_path}")
+        return best_eval_model_path
     
-    # Check for best_model (from SaveOnBestRewardCallback)
-    best_model = os.path.join(log_dir, "best_model.zip")
-    if os.path.exists(best_model):
-        print(f"Found best reward model: {best_model}")
-        return best_model
+    # Also check in best_eval_model subdirectory
+    best_eval_subdir = os.path.join(log_dir, "best_eval_model", "best_model.zip")
+    if os.path.exists(best_eval_subdir):
+        print(f"Found best evaluation model: {best_eval_subdir}")
+        return best_eval_subdir
     
-    # Fallback: look for any best_model files in subdirectories
-    best_models = glob.glob(os.path.join(log_dir, "**", "best_model.zip"), recursive=True)
-    best_eval_models = glob.glob(os.path.join(log_dir, "**", "best_eval_model.zip"), recursive=True)
-    
-    all_best_models = best_eval_models + best_models
-    if all_best_models:
-        # Sort by modification time and return latest
-        latest = max(all_best_models, key=os.path.getmtime)
-        print(f"Found best model: {latest}")
-        return latest
+    # 3. Check for best_model in logs/
+    best_model_path = os.path.join(log_dir, "best_model.zip")
+    if os.path.exists(best_model_path):
+        print(f"Found best reward model: {best_model_path}")
+        return best_model_path
     
     return None
 
@@ -203,65 +223,84 @@ def train_model(
         min_grid_distance=0.0  # Removed - no minimum distance
     )
     
-    # Check for existing best model
+    # Check for existing checkpoint (crash-proof training)
     checkpoint_path = None
     if continue_training:
-        checkpoint_path = find_latest_best_model(log_dir)
+        checkpoint_path = find_latest_checkpoint(model_dir, log_dir)
         if checkpoint_path:
-            print(f"\nFound best model: {checkpoint_path}")
-            print("Will continue training from this best model...")
+            print(f"\nFound checkpoint: {checkpoint_path}")
+            print("Will resume training from this checkpoint...")
         else:
-            print("\nNo best model found. Starting fresh training...")
-    
-    # Create agent
-    print(f"\nInitializing PPO agent with {architecture.upper()} architecture...")
+            print("\nNo checkpoint found. Starting fresh training...")
     
     # Set tensorboard_log only if available
     tensorboard_log_path = None
     if TENSORBOARD_AVAILABLE:
         tensorboard_log_path = os.path.join(log_dir, "tensorboard")
-    else:
-        print("Note: TensorBoard not available. Training logs will not be saved.")
-        print("To enable: pip install tensorboard")
     
-    # Create agent with reduced learning rate
-    agent = TradingAgent(
-        env=train_env,
-        architecture=architecture,
-        learning_rate=learning_rate,  # Reduced to 1e-4 (0.0001)
-        n_steps=2048,
-        batch_size=64,
-        n_epochs=10,
-        gamma=0.99,
-        tensorboard_log=tensorboard_log_path,
-        verbose=1,
-        model_path=checkpoint_path  # Load checkpoint if available
-    )
+    # Wrap environment for PPO
+    from stable_baselines3.common.vec_env import DummyVecEnv
+    from stable_baselines3.common.monitor import Monitor
+    vec_env = DummyVecEnv([lambda: Monitor(train_env)])
     
-    # If loading from checkpoint, update learning rate to prevent loss explosion
-    if checkpoint_path and agent.model:
-        print(f"\nUpdating learning rate to {learning_rate} to prevent loss explosion...")
-        agent.model.learning_rate = learning_rate
+    # Load checkpoint or create new model
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        print(f"\nLoading model from checkpoint: {checkpoint_path}")
+        print(f"Initializing PPO agent with {architecture.upper()} architecture...")
+        
+        # Load model directly with PPO.load (crash-proof)
+        from stable_baselines3 import PPO
+        model = PPO.load(checkpoint_path, env=vec_env, verbose=0)  # verbose=0 to minimize output
+        
+        # Update learning rate to prevent loss explosion
+        print(f"Updating learning rate to {learning_rate} to prevent loss explosion...")
+        model.learning_rate = learning_rate
+        
         # Get current timesteps to calculate remaining steps
-        current_timesteps = agent.model.num_timesteps
+        current_timesteps = model.num_timesteps
         remaining_timesteps = train_timesteps - current_timesteps
+        
         print(f"Current timesteps: {current_timesteps:,}")
+        print(f"Target timesteps: {train_timesteps:,}")
         print(f"Remaining timesteps: {remaining_timesteps:,}")
         
         if remaining_timesteps > 0:
-            print(f"\nContinuing training for {remaining_timesteps:,} more timesteps...")
+            print(f"\nContinuing training for {remaining_timesteps:,} more timesteps until {train_timesteps:,}...")
+            
+            # Create agent wrapper for training
+            agent = TradingAgent(env=train_env, architecture=architecture, verbose=0)
+            agent.model = model  # Use loaded model
+            
             agent.train(
                 total_timesteps=remaining_timesteps,
                 log_dir=log_dir,
                 save_freq=save_freq,
                 eval_env=val_env,
                 eval_freq=eval_freq,
-                reset_num_timesteps=False  # Continue from current timesteps
+                reset_num_timesteps=False  # Continue from current timesteps (crash-proof)
             )
         else:
             print(f"\nModel already trained for {current_timesteps:,} timesteps (target: {train_timesteps:,})")
-            print("Training complete!")
+            print("Training goal already reached!")
+            
+            # Create agent wrapper
+            agent = TradingAgent(env=train_env, architecture=architecture, verbose=0)
+            agent.model = model
     else:
+        # Create new agent from scratch
+        print(f"\nInitializing PPO agent with {architecture.upper()} architecture...")
+        agent = TradingAgent(
+            env=train_env,
+            architecture=architecture,
+            learning_rate=learning_rate,
+            n_steps=2048,
+            batch_size=64,
+            n_epochs=10,
+            gamma=0.99,
+            tensorboard_log=tensorboard_log_path,
+            verbose=0  # Set verbose=0 to minimize terminal output and save memory
+        )
+        
         # Train agent from scratch
         print(f"\nStarting training for {train_timesteps:,} timesteps...")
         agent.train(
